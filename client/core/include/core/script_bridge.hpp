@@ -23,6 +23,8 @@ private:
 
     static inline std::atomic<bool> s_registered{false};
     static inline std::atomic<bool> s_warnedUnavailable{false};
+    static inline std::atomic<bool> s_registrationRequested{false};
+    static inline std::atomic<bool> s_additionalThreadRegistrationAttempted{false};
 };
 
 } // namespace Frontier::Core
