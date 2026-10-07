@@ -19,7 +19,7 @@ for /f "tokens=1-3 delims=:., " %%a in ("%time%") do (
 
 set "STAMP=!D3!-!D2!-!D1!_!T1!-!T2!-!T3!"
 set "LOG=logs\build_!STAMP!.log"
-set "BUILD_DIR=build_release"
+set "BUILD_DIR=build"
 
 set "MINHOOK_COMMIT=8af6b4acae5a9388fd742b56fa79ece89d96f823"
 set "MINHOOK_URL=https://github.com/TsudaKageyu/minhook/archive/!MINHOOK_COMMIT!.zip"
