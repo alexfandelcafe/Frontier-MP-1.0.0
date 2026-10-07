@@ -58,7 +58,6 @@ private:
     static inline ScriptNativeInitFn s_nativeInit{nullptr};
     static inline ScriptNativePush64Fn s_nativePush64{nullptr};
     static inline ScriptNativeCallFn s_nativeCall{nullptr};
-"
     static inline uint64_t s_args[32]{};
     static inline uint32_t s_argCount{0};
     static inline uint64_t s_returnData[4]{};
