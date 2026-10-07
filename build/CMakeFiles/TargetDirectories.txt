@@ -1,0 +1,7 @@
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/shared/CMakeFiles/frontier_shared.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/server/CMakeFiles/frontier_server.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/client/CMakeFiles/minhook.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/client/CMakeFiles/frontier_core.dir
+C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/client/CMakeFiles/frontier_launcher.dir

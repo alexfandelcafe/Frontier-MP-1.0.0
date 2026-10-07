@@ -1,0 +1,21 @@
+# FrontierMP - Dedicated Server Configuration
+# FiveM Architecture for Red Dead Redemption 1 PC
+
+host = "0.0.0.0"
+port = 4674
+http_port = 4675
+
+server_name = "FrontierMP Official Test Server - 1899"
+max_players = 32
+tick_rate = 30
+
+# DLC Assets (Undead Nightmare)
+is_zombie_dlc = false
+
+# Lista de recursos a iniciar automáticamente al encender el servidor (Estilo FiveM)
+resources = [
+    "chat",
+    "freeroam",
+    "nametags",
+    "admin"
+]

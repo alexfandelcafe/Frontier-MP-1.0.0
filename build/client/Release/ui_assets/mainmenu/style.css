@@ -1,0 +1,152 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select: none;
+}
+
+body {
+    background: radial-gradient(circle at center, rgba(30, 20, 15, 0.85) 0%, rgba(10, 5, 2, 0.95) 100%);
+    color: #f4ece1;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+.menu-container {
+    width: 850px;
+    background: rgba(20, 15, 12, 0.9);
+    border: 2px solid #b8860b;
+    border-radius: 8px;
+    box-shadow: 0 0 35px rgba(0, 0, 0, 0.85);
+    padding: 30px;
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 25px;
+}
+
+.logo {
+    font-size: 3rem;
+    letter-spacing: 5px;
+    color: #e5c158;
+    text-shadow: 2px 2px 5px #000;
+}
+
+.logo span {
+    color: #c0392b;
+}
+
+.subtitle {
+    font-size: 0.85rem;
+    letter-spacing: 2px;
+    color: #a89f91;
+}
+
+.tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid rgba(184, 134, 11, 0.3);
+    padding-bottom: 10px;
+}
+
+.tab-btn {
+    background: transparent;
+    border: none;
+    color: #a89f91;
+    font-size: 1rem;
+    font-weight: bold;
+    padding: 8px 18px;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.tab-btn.active, .tab-btn:hover {
+    color: #e5c158;
+    border-bottom: 2px solid #e5c158;
+}
+
+.card {
+    background: rgba(35, 25, 20, 0.7);
+    padding: 20px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.card h3 {
+    margin-bottom: 15px;
+    color: #e5c158;
+}
+
+.input-group {
+    margin-bottom: 15px;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.9rem;
+    color: #d1c7b7;
+}
+
+.input-group input {
+    width: 100%;
+    padding: 10px 14px;
+    background: rgba(10, 5, 2, 0.8);
+    border: 1px solid #b8860b;
+    color: #fff;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.btn-primary {
+    width: 100%;
+    padding: 12px;
+    background: #8b0000;
+    border: 1px solid #c0392b;
+    color: #fff;
+    font-size: 1.1rem;
+    font-weight: bold;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.btn-primary:hover {
+    background: #a93226;
+    box-shadow: 0 0 15px rgba(192, 57, 43, 0.5);
+}
+
+.server-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+.server-table th, .server-table td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn-small {
+    padding: 4px 10px;
+    background: #27ae60;
+    border: none;
+    color: white;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.tab-pane {
+    display: none;
+}
+
+.tab-pane.active {
+    display: block;
+}

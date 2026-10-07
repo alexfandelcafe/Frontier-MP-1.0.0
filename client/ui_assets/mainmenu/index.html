@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>FrontierMP - Main Menu</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="mainmenu" class="menu-container">
+        <header class="header">
+            <h1 class="logo">FRONTIER<span>MP</span></h1>
+            <p class="subtitle">RED DEAD REDEMPTION 1 MULTIPLAYER FRAMEWORK</p>
+        </header>
+
+        <div class="content-box">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="play">CONECTAR</button>
+                <button class="tab-btn" data-tab="servers">SERVIDORES</button>
+                <button class="tab-btn" data-tab="settings">AJUSTES</button>
+            </div>
+
+            <div id="tab-play" class="tab-pane active">
+                <div class="card">
+                    <h3>Conexión Directa</h3>
+                    <div class="input-group">
+                        <label>Nombre de Forajido:</label>
+                        <input type="text" id="player-name" value="Outlaw_John">
+                    </div>
+                    <div class="input-group">
+                        <label>Dirección del Servidor (IP:Puerto):</label>
+                        <input type="text" id="server-address" value="127.0.0.1:4674">
+                    </div>
+                    <button id="btn-connect" class="btn-primary">ENTRAR AL SERVIDOR</button>
+                </div>
+            </div>
+
+            <div id="tab-servers" class="tab-pane">
+                <div class="card">
+                    <h3>Lista Maestra de Servidores</h3>
+                    <table class="server-table">
+                        <thead>
+                            <tr>
+                                <th>Servidor</th>
+                                <th>Modo</th>
+                                <th>Jugadores</th>
+                                <th>Ping</th>
+                                <th>Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="server-list-body">
+                            <tr>
+                                <td>FrontierMP Official Freeroam #1</td>
+                                <td>Freeroam 1899</td>
+                                <td>14 / 32</td>
+                                <td>35ms</td>
+                                <td><button class="btn-small" onclick="quickConnect('127.0.0.1:4674')">Unirse</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-settings" class="tab-pane">
+                <div class="card">
+                    <h3>Configuración de FrontierMP</h3>
+                    <p>Tickrate de sincronización: 30 Hz</p>
+                    <p>CEF Hardware Acceleration: Activa</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

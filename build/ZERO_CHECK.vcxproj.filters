@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\CMakeFiles\cd30e2c9008f6c24b9ab4b5020fc67c0\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{56DA7A93-3C20-3966-9944-7142CE4B7B51}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

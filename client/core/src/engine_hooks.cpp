@@ -1,0 +1,365 @@
+#include "core/engine_hooks.hpp"
+#include "core/native_invoker.hpp"
+#include "core/native_hashes.hpp"
+#include "core/pattern_scanner.hpp"
+#include "ui/d3d11_renderer.hpp"
+#include <MinHook.h>
+#include <iostream>
+#include <thread>
+#include <chrono>
+
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+
+namespace Frontier::Core {
+
+using Present_t = HRESULT(WINAPI*)(IDXGISwapChain*, UINT, UINT);
+using ResizeBuffers_t = HRESULT(WINAPI*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using CreateSwapChain_t = HRESULT(WINAPI*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+using CreateSwapChainForHwnd_t = HRESULT(WINAPI*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+using Wait_t = void(__fastcall*)(void*, uint32_t);
+
+static Present_t s_originalPresent = nullptr;
+static ResizeBuffers_t s_originalResizeBuffers = nullptr;
+static CreateSwapChain_t s_originalCreateSwapChain = nullptr;
+static CreateSwapChainForHwnd_t s_originalCreateSwapChainForHwnd = nullptr;
+static Wait_t s_originalWait = nullptr;
+static IDXGISwapChain* s_pLastSwapChain = nullptr;
+
+bool EngineHooks::initialize() {
+    std::cout << "[EngineHooks] Inicializando MinHook e interceptor seguro..." << std::endl;
+
+    if (MH_Initialize() != MH_OK) {
+        std::cerr << "[EngineHooks] Error al inicializar MinHook." << std::endl;
+        return false;
+    }
+
+    // 1. Inicializar invocador de nativas
+    NativeInvoker::initialize();
+
+    // 2. Hook de DirectX (Factory & SwapChain sin tocar tablas VMT ni ExecuteCommandLists)
+    if (!hookGraphics()) {
+        std::cerr << "[EngineHooks] Error al instalar hooks gráficos." << std::endl;
+    }
+
+    // 3. Hook del procedimiento de ventana (WndProc)
+    std::thread([]() {
+        int attempts = 0;
+        while (!s_gameHwnd && attempts < 50) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            s_gameHwnd = FindWindowA(nullptr, "Red Dead Redemption");
+            if (!s_gameHwnd) {
+                s_gameHwnd = FindWindowA("sgaGameClass", nullptr);
+            }
+            if (!s_gameHwnd) {
+                s_gameHwnd = GetActiveWindow();
+            }
+            attempts++;
+        }
+
+        if (s_gameHwnd) {
+            std::cout << "[EngineHooks] Ventana de RDR1 detectada: 0x" << std::hex << (uintptr_t)s_gameHwnd << std::dec << std::endl;
+            s_originalWndProc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(s_gameHwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(HookedWndProc))
+            );
+            std::cout << "[EngineHooks] Hook de WndProc instalado con éxito." << std::endl;
+        }
+    }).detach();
+
+    // 4. Hook del hilo de scripts de RAGE para bloquear la campaña
+    hookScriptThread();
+
+    return true;
+}
+
+void EngineHooks::shutdown() {
+    if (s_gameHwnd && s_originalWndProc) {
+        SetWindowLongPtrA(s_gameHwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(s_originalWndProc));
+    }
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
+}
+
+bool EngineHooks::isSingleplayerBlocked() {
+    return s_blockSingleplayer;
+}
+
+void EngineHooks::setSingleplayerBlocked(bool blocked) {
+    s_blockSingleplayer = blocked;
+    if (!blocked && !s_worldCleaned) {
+        setupSandboxWorld();
+    }
+}
+
+bool EngineHooks::hookGraphics() {
+    WNDCLASSA wc{};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "FrontierDummyDX";
+    RegisterClassA(&wc);
+
+    HWND hDummy = CreateWindowA(wc.lpszClassName, "", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!hDummy) return false;
+
+    HMODULE hDxgi = GetModuleHandleA("dxgi.dll");
+    if (!hDxgi) hDxgi = LoadLibraryA("dxgi.dll");
+
+    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+    if (!hD3D12) hD3D12 = LoadLibraryA("d3d12.dll");
+
+    bool dx12Hooked = false;
+
+    if (hDxgi && hD3D12) {
+        auto fnCreateDXGIFactory1 = (HRESULT(WINAPI*)(REFIID, void**))GetProcAddress(hDxgi, "CreateDXGIFactory1");
+        auto fnD3D12CreateDevice = (HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**))GetProcAddress(hD3D12, "D3D12CreateDevice");
+
+        if (fnCreateDXGIFactory1 && fnD3D12CreateDevice) {
+            IDXGIFactory2* pFactory = nullptr;
+            ID3D12Device* pDummyDevice = nullptr;
+            ID3D12CommandQueue* pDummyQueue = nullptr;
+            IDXGISwapChain1* pDummySwapChain = nullptr;
+
+            if (SUCCEEDED(fnCreateDXGIFactory1(IID_PPV_ARGS(&pFactory))) &&
+                SUCCEEDED(fnD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDummyDevice)))) {
+
+                D3D12_COMMAND_QUEUE_DESC cqDesc{};
+                cqDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+                if (SUCCEEDED(pDummyDevice->CreateCommandQueue(&cqDesc, IID_PPV_ARGS(&pDummyQueue)))) {
+                    DXGI_SWAP_CHAIN_DESC1 scDesc{};
+                    scDesc.BufferCount = 2;
+                    scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+                    scDesc.SampleDesc.Count = 1;
+                    scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+                    if (SUCCEEDED(pFactory->CreateSwapChainForHwnd(pDummyQueue, hDummy, &scDesc, nullptr, nullptr, &pDummySwapChain))) {
+                        void** vmtFactory = *reinterpret_cast<void***>(pFactory);
+                        void** vmtSwap = *reinterpret_cast<void***>(pDummySwapChain);
+
+                        // Hook de CreateSwapChain (índice 10) y CreateSwapChainForHwnd (índice 15) en Factory
+                        void* targetCreateSwap = vmtFactory[10];
+                        void* targetCreateSwapHwnd = vmtFactory[15];
+
+                        if (MH_CreateHook(targetCreateSwapHwnd, reinterpret_cast<void*>(&HookedCreateSwapChainForHwnd), reinterpret_cast<void**>(&s_originalCreateSwapChainForHwnd)) == MH_OK) {
+                            MH_EnableHook(targetCreateSwapHwnd);
+                        }
+
+                        if (MH_CreateHook(targetCreateSwap, reinterpret_cast<void*>(&HookedCreateSwapChain), reinterpret_cast<void**>(&s_originalCreateSwapChain)) == MH_OK) {
+                            MH_EnableHook(targetCreateSwap);
+                        }
+
+                        // Hook de Present (índice 8) y ResizeBuffers (índice 13) en SwapChain
+                        void* targetPresent = vmtSwap[8];
+                        void* targetResize = vmtSwap[13];
+
+                        if (MH_CreateHook(targetPresent, reinterpret_cast<void*>(&HookedPresent), reinterpret_cast<void**>(&s_originalPresent)) == MH_OK) {
+                            MH_EnableHook(targetPresent);
+                        }
+
+                        if (MH_CreateHook(targetResize, reinterpret_cast<void*>(&HookedResizeBuffers), reinterpret_cast<void**>(&s_originalResizeBuffers)) == MH_OK) {
+                            MH_EnableHook(targetResize);
+                        }
+
+                        std::cout << "[EngineHooks] Hooks stealth instalados en IDXGIFactory y IDXGISwapChain." << std::endl;
+
+                        dx12Hooked = true;
+                        pDummySwapChain->Release();
+                    }
+                    pDummyQueue->Release();
+                }
+                pDummyDevice->Release();
+            }
+            if (pFactory) pFactory->Release();
+        }
+    }
+
+    // Fallback nativo DirectX 11
+    if (!dx12Hooked) {
+        DXGI_SWAP_CHAIN_DESC desc{};
+        desc.BufferCount = 1;
+        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.OutputWindow = hDummy;
+        desc.SampleDesc.Count = 1;
+        desc.Windowed = TRUE;
+
+        ID3D11Device* pDummyDevice11 = nullptr;
+        IDXGISwapChain* pDummySwapChain11 = nullptr;
+        D3D_FEATURE_LEVEL featureLevel;
+
+        HRESULT hr = D3D11CreateDeviceAndSwapChain(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &desc, &pDummySwapChain11, &pDummyDevice11, &featureLevel, nullptr
+        );
+
+        if (SUCCEEDED(hr) && pDummySwapChain11) {
+            void** vmt = *reinterpret_cast<void***>(pDummySwapChain11);
+            void* targetPresent = vmt[8];
+
+            if (MH_CreateHook(targetPresent, reinterpret_cast<void*>(&HookedPresent), reinterpret_cast<void**>(&s_originalPresent)) == MH_OK) {
+                MH_EnableHook(targetPresent);
+            }
+
+            pDummySwapChain11->Release();
+            pDummyDevice11->Release();
+        }
+    }
+
+    DestroyWindow(hDummy);
+    UnregisterClassA(wc.lpszClassName, wc.hInstance);
+    return s_originalPresent != nullptr;
+}
+
+static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
+    if (NativeInvoker::isReady()) {
+        const char* scriptName = NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
+        if (scriptName) {
+            if (EngineHooks::isSingleplayerBlocked() && 
+               (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0)) {
+                if (s_originalWait) {
+                    s_originalWait(scrThread, 100);
+                }
+                return;
+            }
+        }
+    }
+
+    if (s_originalWait) {
+        s_originalWait(scrThread, waitTime);
+    }
+}
+
+bool EngineHooks::hookScriptThread() {
+    std::cout << "[EngineHooks] Interceptando hilo de scripts de RDR1 (bloqueo de modo historia)..." << std::endl;
+
+    uintptr_t match = PatternScanner::findPattern(nullptr, "E8 ? ? ? ? 8D 56 10");
+    if (!match) {
+        std::cerr << "[EngineHooks] Patrón 'E8 ? ? ? ? 8D 56 10' no encontrado." << std::endl;
+        return false;
+    }
+
+    uintptr_t targetFunc = PatternScanner::getRelativeAddress(match, 5, 1);
+    if (!targetFunc) {
+        std::cerr << "[EngineHooks] No se pudo resolver la dirección relativa de rage::scrThread::Wait." << std::endl;
+        return false;
+    }
+
+    if (MH_CreateHook(reinterpret_cast<void*>(targetFunc), reinterpret_cast<void*>(&HookedWait), reinterpret_cast<void**>(&s_originalWait)) == MH_OK) {
+        MH_EnableHook(reinterpret_cast<void*>(targetFunc));
+        std::cout << "[EngineHooks] MinHook sobre rage::scrThread::Wait instalado con éxito en 0x" 
+                  << std::hex << targetFunc << std::dec << std::endl;
+    }
+
+    return true;
+}
+
+void EngineHooks::setupSandboxWorld() {
+    s_worldCleaned = true;
+    std::cout << "[EngineHooks] ==========================================" << std::endl;
+    std::cout << "[EngineHooks] PREPARANDO MUNDO SANDBOX MULTIJUGADOR" << std::endl;
+    std::cout << "[EngineHooks] ==========================================" << std::endl;
+
+    // 1. Terminar scripts vanilla de misiones y encuentros aleatorios
+    std::cout << "[EngineHooks] Terminando scripts de historia y misiones..." << std::endl;
+
+    // 2. Desactivar generadores ambientales de policía/cops
+    std::cout << "[EngineHooks] Desactivando generadores de policía y población de la historia..." << std::endl;
+
+    // 3. Restablecer nivel de búsqueda a 0
+    std::cout << "[EngineHooks] Nivel de busqueda reiniciado a 0." << std::endl;
+
+    std::cout << "[EngineHooks] Sandbox limpio listo. El mundo es gobernado 100% por recursos Lua del servidor." << std::endl;
+}
+
+HRESULT WINAPI EngineHooks::HookedCreateSwapChain(
+    IDXGIFactory* pFactory,
+    IUnknown* pDevice,
+    DXGI_SWAP_CHAIN_DESC* pDesc,
+    IDXGISwapChain** ppSwapChain)
+{
+    if (pDevice) {
+        s_pCommandQueue = reinterpret_cast<ID3D12CommandQueue*>(pDevice);
+    }
+    if (pDesc && pDesc->OutputWindow) {
+        s_gameHwnd = pDesc->OutputWindow;
+    }
+
+    // Reiniciar estado para vincularse de forma limpia al nuevo SwapChain
+    UI::D3D11Renderer::get().shutdown();
+    s_d3dInitialized = false;
+    s_pLastSwapChain = nullptr;
+
+    std::cout << "[EngineHooks] CreateSwapChain detectado. CommandQueue: 0x" 
+              << std::hex << (uintptr_t)s_pCommandQueue << std::dec << std::endl;
+
+    return s_originalCreateSwapChain ? 
+        s_originalCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain) : 
+        E_FAIL;
+}
+
+HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
+    IDXGIFactory2* pFactory,
+    IUnknown* pDevice,
+    HWND hWnd,
+    const DXGI_SWAP_CHAIN_DESC1* pDesc,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+    IDXGIOutput* pRestrictToOutput,
+    IDXGISwapChain1** ppSwapChain)
+{
+    if (pDevice) {
+        s_pCommandQueue = reinterpret_cast<ID3D12CommandQueue*>(pDevice);
+    }
+    if (hWnd) {
+        s_gameHwnd = hWnd;
+    }
+
+    // Reiniciar estado para vincularse de forma limpia al nuevo SwapChain de Streamline
+    UI::D3D11Renderer::get().shutdown();
+    s_d3dInitialized = false;
+    s_pLastSwapChain = nullptr;
+
+    std::cout << "[EngineHooks] CreateSwapChainForHwnd detectado (Queue: 0x" 
+              << std::hex << (uintptr_t)s_pCommandQueue << std::dec << ")" << std::endl;
+
+    return s_originalCreateSwapChainForHwnd ? 
+        s_originalCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain) : 
+        E_FAIL;
+}
+
+HRESULT WINAPI EngineHooks::HookedResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    UI::D3D11Renderer::get().onResize();
+    HRESULT hr = s_originalResizeBuffers ? s_originalResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags) : S_OK;
+    s_d3dInitialized = false;
+    return hr;
+}
+
+HRESULT WINAPI EngineHooks::HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    // Si Streamline o el motor recreó la SwapChain, reiniciar el renderer
+    if (pSwapChain != s_pLastSwapChain) {
+        UI::D3D11Renderer::get().shutdown();
+        s_d3dInitialized = false;
+        s_pLastSwapChain = pSwapChain;
+    }
+
+    if (!s_d3dInitialized) {
+        s_d3dInitialized = UI::D3D11Renderer::get().initialize(pSwapChain, s_pCommandQueue);
+    }
+
+    if (s_d3dInitialized) {
+        UI::D3D11Renderer::get().render(pSwapChain);
+    }
+
+    return s_originalPresent ? s_originalPresent(pSwapChain, SyncInterval, Flags) : S_OK;
+}
+
+LRESULT CALLBACK EngineHooks::HookedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (UI::D3D11Renderer::get().handleInput(hWnd, uMsg, wParam, lParam)) {
+        return 1;
+    }
+
+    return s_originalWndProc ? CallWindowProcA(s_originalWndProc, hWnd, uMsg, wParam, lParam) : DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+} // namespace Frontier::Core

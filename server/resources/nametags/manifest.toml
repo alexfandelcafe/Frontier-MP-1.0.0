@@ -1,0 +1,8 @@
+name = "nametags"
+description = "3D Player Nametags for FrontierMP"
+version = "1.0.0"
+author = "FrontierMP Team"
+
+client_scripts = [
+    "client.lua"
+]

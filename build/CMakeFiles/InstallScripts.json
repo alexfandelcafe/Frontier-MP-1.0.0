@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/cmake_install.cmake",
+		"C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/shared/cmake_install.cmake",
+		"C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/server/cmake_install.cmake",
+		"C:/Users/Alex/.gemini/antigravity/scratch/FrontierMP/build/client/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

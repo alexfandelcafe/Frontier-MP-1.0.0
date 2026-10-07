@@ -1,0 +1,12 @@
+name = "freeroam"
+description = "Freeroam Game Mode for FrontierMP"
+version = "1.0.0"
+author = "FrontierMP Team"
+
+server_scripts = [
+    "server.lua"
+]
+
+client_scripts = [
+    "client.lua"
+]

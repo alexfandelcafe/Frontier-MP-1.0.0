@@ -1,0 +1,8 @@
+name = "admin"
+description = "Admin Commands & Moderation Resource"
+version = "1.0.0"
+author = "FrontierMP Team"
+
+server_scripts = [
+    "server.lua"
+]

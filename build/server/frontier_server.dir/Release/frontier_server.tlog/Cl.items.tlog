@@ -1,0 +1,8 @@
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\main.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\main.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\server.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\server.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\player_manager.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\player_manager.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\entity_manager.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\entity_manager.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\resource_manager.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\resource_manager.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\lua_environment.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\lua_environment.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\network_manager.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\network_manager.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\server\src\http_server.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\server\frontier_server.dir\Release\http_server.obj

@@ -1,0 +1,8 @@
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\core\src\dllmain.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\dllmain.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\core\src\engine_hooks.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\engine_hooks.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\core\src\pattern_scanner.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\pattern_scanner.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\core\src\native_invoker.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\native_invoker.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\core\src\player_factory.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\player_factory.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\net\src\client_net.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\client_net.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\ui\src\cef_manager.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\cef_manager.obj
+C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\client\ui\src\d3d11_renderer.cpp;C:\Users\Alex\.gemini\antigravity\scratch\FrontierMP\build\client\frontier_core.dir\Release\d3d11_renderer.obj
