@@ -27,9 +27,7 @@ constexpr const char* kScriptHookArchiveName = "ScriptHookRDR-164-1-5-2-17385734
 // ScriptHookRDR remains outside the repository and is downloaded only when
 // the client-side copy is missing.
 constexpr const char* kPrimaryDownloadUrl =
-    "https://www.dropbox.com/scl/fi/e32pm2rx98rt3hu9xg0ru/"
-    "ScriptHookRDR-164-1-5-2-1738573417.zip"
-    "?rlkey=ey0dqbf27wj38hh7o36911bvr&st=32g9m9c8&dl=1";
+    "https://raw.githubusercontent.com/alexfandelcafe/Frontier-MP-1.0.0/main/ScriptHookRDR.dll";
 
 std::string quotePowerShell(const std::string& value) {
     std::string quoted = "'";
