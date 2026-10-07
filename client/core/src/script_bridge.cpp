@@ -246,8 +246,6 @@ void resolveScriptHook(HMODULE frontierModule) {
         nativeInit,
         nativePush64,
         nativeCall);
-
-    dumpRelevantExports(hookModule);
 }
 
 } // namespace
@@ -281,6 +279,12 @@ void ScriptBridge::registerScript(HMODULE module) {
     s_scriptRegister(
         module,
         &ScriptBridge::scriptMain);
+
+    // Diagnostics deliberately happen after registration so they cannot delay
+    // ScriptHookRDR's startup scan.
+    if (HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll")) {
+        dumpRelevantExports(hookModule);
+    }
 
     std::cout
         << "[ScriptBridge] Registro de FrontierMP enviado inmediatamente mediante "
