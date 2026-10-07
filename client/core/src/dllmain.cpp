@@ -112,12 +112,10 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // ScriptHookRDR may be injected just after Frontier. initialize() resolves
-    // its API if available; the worker loop below keeps retrying until the
-    // ScriptMain callback actually starts.
+    // ScriptHookRDR is staged after Frontier by the launcher. The bridge waits
+    // until ScriptHook has installed its real rage::scrThread::Run hook and
+    // then submits exactly one registration from this worker thread.
     Frontier::Core::ScriptBridge::initialize(hModule);
-    appendBootLog(modDir,
-        "[ScriptBridge] Early registration requested from DLL_PROCESS_ATTACH.");
 
     // 2. Inicializar hooks de DirectX 12 / DirectX 11, WndProc y bloqueo de campaña
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
@@ -151,9 +149,8 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // The launcher keeps Frontier resident before ScriptHookRDR starts its
-        // startup scan. Retry from a normal worker thread until our callback
-        // really starts. No natives are executed here.
+        // Retry until ScriptHookRDR's Run scheduler is ready and the callback
+        // actually starts. tryRegister() becomes a no-op after submission.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
             (++scriptRegistrationTicks % 15) == 0) {
             Frontier::Core::ScriptBridge::tryRegister(hModule);
