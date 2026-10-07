@@ -199,7 +199,12 @@ HMODULE ensureScriptHookLoaded(HMODULE frontierModule) {
 }
 
 void resolveScriptHook(HMODULE frontierModule) {
-    HMODULE hookModule = ensureScriptHookLoaded(frontierModule);
+    (void)frontierModule;
+
+    // The launcher owns ScriptHookRDR loading. Frontier only observes an
+    // already-loaded module here so it cannot accidentally race or replace
+    // the launch order.
+    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
     if (!hookModule) {
         return;
     }
