@@ -138,5 +138,8 @@ No cambiar estos hashes sin evidencia adicional. Una búsqueda histórica extern
 ## Limitaciones
 No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el launcher en la PC del usuario. La validación final requiere que el usuario configure/compile y ejecute el launcher en Windows.
 
+## Último commit de contexto
+- 46c608c1aa35177cf3c747d00bf79379cc4cdf71 — Add debugging context for next chat
+
 ## Nota importante
 ScriptHookRDR es un binario de terceros. El diseño deliberadamente no lo embebe en el repositorio ni lo descarga durante cada arranque una vez que está en caché. Solo se obtiene cuando falta.
