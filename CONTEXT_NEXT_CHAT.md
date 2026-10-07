@@ -71,6 +71,8 @@ Commits:
 - 5c449b7badb44eaf26abb22b4c997aff9feb458e
 - 96d10ee00bdaa850254dcafbca8ebbfcdd192105
 - ad2be8eb31773b12838918f992ae7b36e5121b60
+- d6f3601e64f3abbd36a1647ee7fe6741184447ea
+- a99fdff48f3908316626b8f4bd756f0c5940b064
 
 La implementación final actual:
 1. Comprueba si gameDir/ScriptHookRDR.dll ya existe y tiene tamaño razonable.
@@ -83,28 +85,31 @@ La implementación final actual:
 7. Guarda una copia en la caché.
 8. Copia ScriptHookRDR.dll al directorio del juego.
 9. Crea scripthookrdr.runtime.txt con la versión/ruta.
-10. NO instala ni sobrescribe dinput8.dll. Frontier carga ScriptHookRDR.dll explícitamente mediante LoadLibraryEx, y así se evita modificar el loader ASI del usuario.
+10. Copia ScriptHookRDR.dll únicamente a launcherDir/ScriptHookRDR.dll; nunca a gameDir.
+11. NO instala ni sobrescribe dinput8.dll. Frontier carga ScriptHookRDR.dll explícitamente mediante LoadLibraryEx desde la carpeta de frontier_core.dll, y así se evita modificar el loader ASI del usuario.
 
 El launcher aborta antes de CreateProcess si ScriptHookRDR no queda disponible.
+La descarga usa WinHTTP y la dependencia queda exclusivamente en el directorio del cliente.
+El directorio del juego no se modifica ni se copia allí ScriptHookRDR.dll.
 
 ## CMake actual
 client/CMakeLists.txt ahora agrega:
 - launcher/src/dependency_bootstrap.cpp
-- urlmon en target_link_libraries(frontier_launcher ...)
+- winhttp en target_link_libraries(frontier_launcher ...)
 
 MinHook continúa funcionando mediante vendor/minhook si existe o FetchContent en caso contrario.
 
 ## Flujo esperado en el próximo test
 Al lanzar Frontier:
 [Launcher] Descargando ScriptHookRDR 1.5.2...
-[Launcher] ScriptHookRDR 1.5.2 listo en: D:\Red Dead Redemption\ScriptHookRDR.dll
-[Launcher] ScriptHookRDR instalado en el directorio del juego.
+[Launcher] ScriptHookRDR 1.5.2 listo en: <FrontierMP client>\ScriptHookRDR.dll
+[Launcher] La instalación del juego no fue modificada.
 [Launcher] Launching RDR.exe suspended...
 
 Después, dentro del juego:
 [ScriptBridge] ScriptHookRDR.dll ya estaba cargado...
 o:
-[ScriptBridge] ScriptHookRDR.dll cargado desde el directorio del juego: D:\Red Dead Redemption\ScriptHookRDR.dll
+[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier: <FrontierMP client>\ScriptHookRDR.dll
 [ScriptBridge] Export count: ...
 [NativeInvoker] ScriptHook native API lista. ...
 [ScriptBridge] Hilo de script FrontierMP registrado en ScriptHookRDR.
@@ -138,8 +143,11 @@ No cambiar estos hashes sin evidencia adicional. Una búsqueda histórica extern
 ## Limitaciones
 No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el launcher en la PC del usuario. La validación final requiere que el usuario configure/compile y ejecute el launcher en Windows.
 
-## Último commit de contexto
-- 46c608c1aa35177cf3c747d00bf79379cc4cdf71 — Add debugging context for next chat
+## Últimos commits de contexto
+- ef275bc4acd87746a73f400a7894d0e280f8f7ee — Fix client ScriptHook bridge formatting
+- 3913f3ed32d8a16037dd6532f079e49e0c9a1ce6 — Use WinHTTP for Frontier dependency downloads
+- a99fdff48f3908316626b8f4bd756f0c5940b064 — Fix client bootstrap header formatting
+- d6f3601e64f3abbd36a1647ee7fe6741184447ea — Keep ScriptHookRDR entirely in the client
 
 ## Nota importante
 ScriptHookRDR es un binario de terceros. El diseño deliberadamente no lo embebe en el repositorio ni lo descarga durante cada arranque una vez que está en caché. Solo se obtiene cuando falta.
