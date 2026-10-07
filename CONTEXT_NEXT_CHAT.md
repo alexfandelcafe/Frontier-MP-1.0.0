@@ -145,6 +145,8 @@ No cambiar estos hashes sin evidencia adicional. Una búsqueda histórica extern
 No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el launcher en la PC del usuario. La validación final requiere que el usuario configure/compile y ejecute el launcher en Windows.
 
 ## Últimos commits de contexto
+- 9ec40f8f49c8b5563e9e63d37a2cc7a4083df341 — Include fixed-width integer header for script retry state
+- aa6f623ffb627469610612840bd469732af006aa — Retry ScriptHook script registration until script thread starts
 - 367096159db4eec4a00fc9ceccc3ddcaac4097ac — Remove obsolete ZIP extraction path from launcher bootstrap
 - 8c34200df5f8b059b52e279aa84ecbc5ceeedaee — Validate existing client ScriptHookRDR image
 - b2eedb7807dfbb320f473c234822cb0366e38d26 — Validate downloaded ScriptHookRDR as a PE image
@@ -159,3 +161,8 @@ No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el lau
 
 ## Nota importante
 ScriptHookRDR es un binario de terceros. El diseño deliberadamente no lo embebe en el repositorio ni lo descarga durante cada arranque una vez que está en caché. Solo se obtiene cuando falta.
+
+### Diagnóstico del último test
+ScriptHookRDR 1.5.2 carga correctamente desde build/client/Release y los 24 exports se enumeran. nativeInit/nativePush64/nativeCall y scriptRegister/scriptWait se resuelven correctamente.
+El problema observado fue que scriptRegister() devolvía el flujo de registro, pero ScriptMain no aparecía en consola. La causa en Frontier era que s_registered se marcaba true inmediatamente después de llamar scriptRegister(), impidiendo reintentos y desactivando el fallback de rage::scrThread::Wait antes de que el scheduler de ScriptHookRDR terminara de inicializarse.
+La solución actual separa registro solicitado de script realmente iniciado, resuelve scriptUnregister(), reintenta el registro cada 3 segundos si ScriptMain no arranca y deja isRegistered() en false hasta que ScriptMain efectivamente comienza. El fallback de rage::scrThread::Wait queda habilitado mientras tanto.
