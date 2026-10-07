@@ -131,10 +131,15 @@ void dumpRelevantExports(HMODULE module) {
 HMODULE ensureScriptHookLoaded() {
     HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
     if (hookModule) {
+        std::cout << "[ScriptBridge] ScriptHookRDR.dll ya estaba cargado en 0x"
+                  << std::hex << reinterpret_cast<uintptr_t>(hookModule)
+                  << std::dec << std::endl;
         return hookModule;
     }
 
-    static std::atomic<bool> loadAttemptLogged{false};
+    static std::atomic<bool> loadDiagnosticsPrinted{false};
+    DWORD gameLoadError = ERROR_SUCCESS;
+    DWORD ownLoadError = ERROR_SUCCESS;
 
     char gamePath[MAX_PATH] = {};
     if (GetModuleFileNameA(nullptr, gamePath, MAX_PATH)) {
@@ -150,9 +155,18 @@ HMODULE ensureScriptHookLoaded() {
                 LOAD_WITH_ALTERED_SEARCH_PATH);
 
             if (hookModule) {
-                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado explícitamente desde: "
+                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado desde el directorio del juego: "
                           << exePath << std::endl;
                 return hookModule;
+            }
+
+            gameLoadError = GetLastError();
+
+            if (!loadDiagnosticsPrinted.exchange(true, std::memory_order_acq_rel)) {
+                std::cerr << "[ScriptBridge] Falló LoadLibraryEx del juego: "
+                          << exePath
+                          << " | GetLastError=" << gameLoadError
+                          << std::endl;
             }
         }
     }
@@ -172,22 +186,30 @@ HMODULE ensureScriptHookLoaded() {
                 LOAD_WITH_ALTERED_SEARCH_PATH);
 
             if (hookModule) {
-                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado explícitamente desde: "
+                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier: "
                           << modulePath << std::endl;
                 return hookModule;
+            }
+
+            ownLoadError = GetLastError();
+
+            if (!loadDiagnosticsPrinted.exchange(true, std::memory_order_acq_rel)) {
+                std::cerr << "[ScriptBridge] Falló LoadLibraryEx junto a Frontier: "
+                          << modulePath
+                          << " | GetLastError=" << ownLoadError
+                          << std::endl;
             }
         }
     }
 
-    if (!loadAttemptLogged.exchange(true, std::memory_order_acq_rel)) {
-        std::cerr << "[ScriptBridge] No se pudo cargar ScriptHookRDR.dll. "
-                  << "Asegúrate de que el DLL esté instalado junto a RDR.exe."
-                  << " GetLastError=" << GetLastError() << std::endl;
-    }
+    std::ostringstream diagnostic;
+    diagnostic << "[ScriptBridge] ScriptHookRDR.dll no pudo cargarse"
+               << " | gameError=" << gameLoadError
+               << " | frontierError=" << ownLoadError;
+    std::cerr << diagnostic.str() << std::endl;
 
     return nullptr;
 }
-
 void resolveScriptHook() {
     HMODULE hookModule = ensureScriptHookLoaded();
     if (!hookModule) {
