@@ -218,7 +218,7 @@ void resolveScriptHook(HMODULE frontierModule) {
                 "scriptRegisterAdditionalThread");
     }
 
-    s_scriptWait = getExportByExactName<ScriptWaitFn>
+    s_scriptWait = getExportByExactName<ScriptWaitFn>(
         hookModule,
         "?scriptWait@@YAXK@Z");
 
