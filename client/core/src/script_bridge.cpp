@@ -29,8 +29,8 @@ ScriptWaitFn s_scriptWait = nullptr;
 //   FUN_180031a20 -> enter a registered script fiber by Script ID
 constexpr uintptr_t kScriptManagerRva = 0x20e0a0;
 constexpr uintptr_t kRunEnteredFlagRva = 0x20e3f8;
-constexpr uintptr_t kScriptManagerMaintenanceRva = 0x31f970;
-constexpr uintptr_t kScriptStartByIdRva = 0x31fa20;
+constexpr uintptr_t kScriptManagerMaintenanceRva = 0x31970;
+constexpr uintptr_t kScriptStartByIdRva = 0x31a20;
 
 ScriptManagerMaintenanceFn s_scriptManagerMaintenance = nullptr;
 ScriptStartByIdFn s_scriptStartById = nullptr;
