@@ -11,6 +11,36 @@ rem Use a clean out-of-source build directory so a copied repository never reuse
 rem a CMakeCache generated in another absolute path.
 set "BUILD_DIR=build_release"
 
+set "MINHOOK_COMMIT=8af6b4acae5a9388fd742b56fa79ece89d96f823"
+set "MINHOOK_URL=https://github.com/TsudaKageyu/minhook/archive/!MINHOOK_COMMIT!.zip"
+
+rem GitHub ZIP downloads do not contain initialized submodules. Bootstrap MinHook locally.
+if not exist "vendor\minhook\src\hook.c" (
+    echo.
+    echo [INFO] MinHook sources are missing. Downloading the pinned dependency...
+    echo [INFO] MinHook sources are missing. Downloading the pinned dependency... >> "!LOG!"
+    set "MINHOOK_TMP=!TEMP!\FrontierMP_Minhook_!RANDOM!"
+    mkdir "!MINHOOK_TMP!" >> "!LOG!" 2>&1
+
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+      "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing -Uri '!MINHOOK_URL!' -OutFile '!MINHOOK_TMP!\minhook.zip'; Expand-Archive -Force '!MINHOOK_TMP!\minhook.zip' '!MINHOOK_TMP!\extract'; New-Item -ItemType Directory -Force -Path '%CD%\vendor' | Out-Null; Move-Item '!MINHOOK_TMP!\extract\minhook-!MINHOOK_COMMIT!' '%CD%\vendor\minhook';" >> "!LOG!" 2>&1
+
+    if not "!ERRORLEVEL!"=="0" (
+        echo [ERROR] Could not download/bootstrap MinHook.
+        echo [ERROR] Could not download/bootstrap MinHook. >> "!LOG!"
+        echo Check internet access or clone the repository with submodules.
+        echo.
+        type "!LOG!"
+        echo.
+        pause
+        exit /b 20
+    )
+
+    rmdir /s /q "!MINHOOK_TMP!" >> "!LOG!" 2>&1
+    echo [OK] MinHook dependency is ready.
+    echo [OK] MinHook dependency is ready. >> "!LOG!"
+)
+
 rem ----------------------------------------------------------
 rem Prepare MinHook. GitHub source archives do not include the
 rem contents of the MinHook submodule, only the submodule entry.
