@@ -22,13 +22,10 @@ using Present_t = HRESULT(WINAPI*)(IDXGISwapChain*, UINT, UINT);
 using ResizeBuffers_t = HRESULT(WINAPI*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 using CreateSwapChain_t = HRESULT(WINAPI*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
 using CreateSwapChainForHwnd_t = HRESULT(WINAPI*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
-using Wait_t = void(__fastcall*)(void*, uint32_t);
-
-static Present_t s_originalPresent = nullptr;
+ static Present_t s_originalPresent = nullptr;
 static ResizeBuffers_t s_originalResizeBuffers = nullptr;
 static CreateSwapChain_t s_originalCreateSwapChain = nullptr;
 static CreateSwapChainForHwnd_t s_originalCreateSwapChainForHwnd = nullptr;
-static Wait_t s_originalWait = nullptr;
 
 // No inicializar D3D11On12 mientras RDR/Streamline está creando y precompilando su pipeline.
 static std::atomic<uint32_t> s_stablePresentFrames{0};
@@ -260,27 +257,6 @@ bool EngineHooks::hookGraphics() {
     return s_originalPresent != nullptr;
 }
 
-static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // Keep this hook strictly diagnostic. The actual multiplayer transition
-    // is executed by ScriptBridge::scriptMain inside ScriptHookRDR's managed
-    // script thread. Calling natives from this hook can duplicate execution
-    // when a registered script is already active.
-    static std::atomic<uint32_t> s_waitHookCalls{0};
-    const uint32_t call =
-        s_waitHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-
-    if (call == 1) {
-        std::cout
-            << "[EngineHooks] rage::scrThread::Wait interceptado; "
-               "hook de contexto de script activo."
-            << std::endl;
-    }
-
-    if (s_originalWait) {
-        s_originalWait(scrThread, waitTime);
-    }
-}
-
 void EngineHooks::processMultiplayerWorldLoad() {
     static std::mutex s_worldLoadMutex;
     std::lock_guard<std::mutex> worldLoadLock(s_worldLoadMutex);
@@ -362,29 +338,16 @@ void EngineHooks::processMultiplayerWorldLoad() {
 }
 
 bool EngineHooks::hookScriptThread() {
-    std::cout << "[EngineHooks] Interceptando hilo de scripts de RDR1 (bloqueo de modo historia)..." << std::endl;
-
-    uintptr_t match = PatternScanner::findPattern(nullptr, "E8 ? ? ? ? 8D 56 10");
-    if (!match) {
-        std::cerr << "[EngineHooks] Patrón 'E8 ? ? ? ? 8D 56 10' no encontrado." << std::endl;
-        return false;
-    }
-
-    uintptr_t targetFunc = PatternScanner::getRelativeAddress(match, 5, 1);
-    if (!targetFunc) {
-        std::cerr << "[EngineHooks] No se pudo resolver la dirección relativa de rage::scrThread::Wait." << std::endl;
-        return false;
-    }
-
-    if (MH_CreateHook(reinterpret_cast<void*>(targetFunc), reinterpret_cast<void*>(&HookedWait), reinterpret_cast<void**>(&s_originalWait)) == MH_OK) {
-        MH_EnableHook(reinterpret_cast<void*>(targetFunc));
-        std::cout << "[EngineHooks] MinHook sobre rage::scrThread::Wait instalado con éxito en 0x" 
-                  << std::hex << targetFunc << std::dec << std::endl;
-    }
-
+    // ScriptHookRDR 1.5.2 already owns the real script scheduler hooks:
+    // rage::scrThread::Run, rage::scrThread::Reset and ConvertThreadToFiber.
+    // The previous Frontier pattern targeted a different routine and added no
+    // value to the multiplayer transition, so leave the RAGE scheduler intact.
+    std::cout
+        << "[EngineHooks] Scheduler de scripts delegado a ScriptHookRDR "
+           "(Run/Reset/ConvertThreadToFiber)."
+        << std::endl;
     return true;
 }
-
 void EngineHooks::setupSandboxWorld() {
     s_worldCleaned = true;
     std::cout << "[EngineHooks] ==========================================" << std::endl;
