@@ -199,10 +199,12 @@ void dumpRelevantExports(HMODULE module) {
 HMODULE ensureScriptHookLoaded(HMODULE frontierModule) {
     HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
     if (hookModule) {
-        if (s_scriptHookObservedTick.load(std::memory_order_acquire) == 0) {
-            s_scriptHookObservedTick.store(
-                GetTickCount64(),
-                std::memory_order_release);
+        // If ScriptHook was loaded by the host before Frontier, there is no
+        // earlier baseline to protect against stale log contents. In that
+        // case, the presence of the completed current initialization is enough.
+        if (!s_scriptHookLogBaselineCaptured.load(std::memory_order_acquire)) {
+            s_scriptHookLogBaselineSize.store(0, std::memory_order_release);
+            s_scriptHookLogBaselineCaptured.store(true, std::memory_order_release);
         }
         std::cout << "[ScriptBridge] ScriptHookRDR.dll ya estaba cargado en 0x"
                   << std::hex
