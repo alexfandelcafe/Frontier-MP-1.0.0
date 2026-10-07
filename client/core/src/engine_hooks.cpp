@@ -7,6 +7,8 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <mutex>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -25,6 +27,12 @@ static ResizeBuffers_t s_originalResizeBuffers = nullptr;
 static CreateSwapChain_t s_originalCreateSwapChain = nullptr;
 static CreateSwapChainForHwnd_t s_originalCreateSwapChainForHwnd = nullptr;
 static Wait_t s_originalWait = nullptr;
+
+// No inicializar D3D11On12 mientras RDR/Streamline está creando y precompilando su pipeline.
+static std::atomic<uint32_t> s_stablePresentFrames{0};
+static IDXGISwapChain* s_pendingSwapChain = nullptr;
+static constexpr uint32_t kOverlayStartupDelayFrames = 300; // ~5 s a 60 FPS
+static std::recursive_mutex s_graphicsMutex;
 static IDXGISwapChain* s_pLastSwapChain = nullptr;
 
 bool EngineHooks::initialize() {
@@ -74,8 +82,23 @@ bool EngineHooks::initialize() {
 }
 
 void EngineHooks::shutdown() {
+    {
+        std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+        UI::D3D11Renderer::get().shutdown();
+        s_d3dInitialized = false;
+        s_pLastSwapChain = nullptr;
+        s_pendingSwapChain = nullptr;
+        s_stablePresentFrames.store(0, std::memory_order_release);
+
+        if (s_pCommandQueue) {
+            s_pCommandQueue->Release();
+            s_pCommandQueue = nullptr;
+        }
+    }
+
     if (s_gameHwnd && s_originalWndProc) {
         SetWindowLongPtrA(s_gameHwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(s_originalWndProc));
+        s_originalWndProc = nullptr;
     }
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
@@ -280,17 +303,22 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChain(
     IDXGISwapChain** ppSwapChain)
 {
     if (pDevice) {
-        s_pCommandQueue = reinterpret_cast<ID3D12CommandQueue*>(pDevice);
+        ID3D12CommandQueue* newQueue = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(
+                __uuidof(ID3D12CommandQueue),
+                reinterpret_cast<void**>(&newQueue)))) {
+            std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+            if (s_pCommandQueue) {
+                s_pCommandQueue->Release();
+            }
+            s_pCommandQueue = newQueue;
+        }
     }
     if (pDesc && pDesc->OutputWindow) {
         s_gameHwnd = pDesc->OutputWindow;
     }
 
-    // Reiniciar estado para vincularse de forma limpia al nuevo SwapChain
-    UI::D3D11Renderer::get().shutdown();
-    s_d3dInitialized = false;
-    s_pLastSwapChain = nullptr;
-
+    // Hook pasivo durante la creación de la swap chain. El renderer se gestiona desde Present().
     std::cout << "[EngineHooks] CreateSwapChain detectado. CommandQueue: 0x" 
               << std::hex << (uintptr_t)s_pCommandQueue << std::dec << std::endl;
 
@@ -309,17 +337,22 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
     IDXGISwapChain1** ppSwapChain)
 {
     if (pDevice) {
-        s_pCommandQueue = reinterpret_cast<ID3D12CommandQueue*>(pDevice);
+        ID3D12CommandQueue* newQueue = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(
+                __uuidof(ID3D12CommandQueue),
+                reinterpret_cast<void**>(&newQueue)))) {
+            std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+            if (s_pCommandQueue) {
+                s_pCommandQueue->Release();
+            }
+            s_pCommandQueue = newQueue;
+        }
     }
     if (hWnd) {
         s_gameHwnd = hWnd;
     }
 
-    // Reiniciar estado para vincularse de forma limpia al nuevo SwapChain de Streamline
-    UI::D3D11Renderer::get().shutdown();
-    s_d3dInitialized = false;
-    s_pLastSwapChain = nullptr;
-
+    // Hook pasivo durante la creación de la swap chain. El renderer se inicializa desde Present().
     std::cout << "[EngineHooks] CreateSwapChainForHwnd detectado (Queue: 0x" 
               << std::hex << (uintptr_t)s_pCommandQueue << std::dec << ")" << std::endl;
 
@@ -329,22 +362,53 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
 }
 
 HRESULT WINAPI EngineHooks::HookedResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+
     UI::D3D11Renderer::get().onResize();
-    HRESULT hr = s_originalResizeBuffers ? s_originalResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags) : S_OK;
+    HRESULT hr = s_originalResizeBuffers
+        ? s_originalResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags)
+        : S_OK;
+
+    // El resize invalida no solo los wrapped resources sino también el estado del
+    // renderer asociado a la swap chain anterior. Fuerza una recreación completa.
+    UI::D3D11Renderer::get().shutdown();
     s_d3dInitialized = false;
+    s_stablePresentFrames.store(0, std::memory_order_release);
+    s_pendingSwapChain = pSwapChain;
     return hr;
 }
 
 HRESULT WINAPI EngineHooks::HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-    // Si Streamline o el motor recreó la SwapChain, reiniciar el renderer
+    if ((Flags & DXGI_PRESENT_TEST) != 0) {
+        return s_originalPresent ? s_originalPresent(pSwapChain, SyncInterval, Flags) : S_OK;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+
     if (pSwapChain != s_pLastSwapChain) {
         UI::D3D11Renderer::get().shutdown();
         s_d3dInitialized = false;
         s_pLastSwapChain = pSwapChain;
+        s_pendingSwapChain = pSwapChain;
+        s_stablePresentFrames.store(0, std::memory_order_release);
+    } else if (s_pendingSwapChain == pSwapChain) {
+        uint32_t stable = s_stablePresentFrames.load(std::memory_order_relaxed);
+        if (stable < kOverlayStartupDelayFrames) {
+            s_stablePresentFrames.store(stable + 1, std::memory_order_release);
+        }
     }
 
-    if (!s_d3dInitialized) {
-        s_d3dInitialized = UI::D3D11Renderer::get().initialize(pSwapChain, s_pCommandQueue);
+    if (!s_d3dInitialized &&
+        s_stablePresentFrames.load(std::memory_order_acquire) >= kOverlayStartupDelayFrames &&
+        s_pCommandQueue != nullptr) {
+        s_d3dInitialized =
+            UI::D3D11Renderer::get().initialize(pSwapChain, s_pCommandQueue);
+
+        if (!s_d3dInitialized) {
+            std::cerr << "[GraphicsOverlay] Inicialización aplazada; se reintentará en el siguiente frame estable."
+                      << std::endl;
+            s_stablePresentFrames.store(kOverlayStartupDelayFrames, std::memory_order_release);
+        }
     }
 
     if (s_d3dInitialized) {
@@ -353,7 +417,6 @@ HRESULT WINAPI EngineHooks::HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncI
 
     return s_originalPresent ? s_originalPresent(pSwapChain, SyncInterval, Flags) : S_OK;
 }
-
 LRESULT CALLBACK EngineHooks::HookedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (UI::D3D11Renderer::get().handleInput(hWnd, uMsg, wParam, lParam)) {
         return 1;
