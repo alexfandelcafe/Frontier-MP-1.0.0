@@ -300,48 +300,4 @@ void ScriptBridge::runFrame() {
     EngineHooks::processMultiplayerWorldLoad();
 }
 
-bool ScriptBridge::isRegistered() {
-    return s_registered.load(std::memory_order_acquire);
-}
-
-void __cdecl ScriptBridge::scriptMain() {
-    bool expected = false;
-    if (!s_registered.compare_exchange_strong(
-            expected,
-            true,
-            std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
-        // A second registration can exist transiently if the regular API was
-        // followed by the additional-thread fallback. Do not run our game loop
-        // twice.
-        return;
-    }
-
-    std::cout
-        << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
-        << std::endl;
-
-    for (;;) {
-        runFrame();
-
-        if (s_scriptWait) {
-            s_scriptWait(0);
-        } else {
-            return;
-        }
-    }
-}
-
-void ScriptBridge::runFrame() {
-    if (!NativeInvoker::isReady()) {
-        NativeInvoker::initialize();
-    }
-
-    if (!NativeInvoker::isReady()) {
-        return;
-    }
-
-    EngineHooks::processMultiplayerWorldLoad();
-}
-
 } // namespace Frontier::Core
