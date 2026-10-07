@@ -19,7 +19,7 @@ using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
 using ScriptUnregisterFn = void (*)(HMODULE);
 
-ScriptRegisterFn s_scriptRegister = nullptr;
+ScriptRegisterFn s_scriptRegisterAdditionalThread = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 ScriptUnregisterFn s_scriptUnregister = nullptr;
 std::atomic<bool> s_exportsDumped{false};
@@ -207,18 +207,18 @@ void resolveScriptHook(HMODULE frontierModule) {
 
     dumpRelevantExports(hookModule);
 
-    s_scriptRegister = getExportByExactName<ScriptRegisterFn>(
+    s_scriptRegisterAdditionalThread = getExportByExactName<ScriptRegisterFn>(
         hookModule,
-        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+        "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
 
-    if (!s_scriptRegister) {
-        s_scriptRegister =
+    if (!s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread =
             resolveMangledExport<ScriptRegisterFn>(
                 hookModule,
-                "scriptRegister");
+                "scriptRegisterAdditionalThread");
     }
 
-    s_scriptWait = getExportByExactName<ScriptWaitFn>(
+    s_scriptWait = getExportByExactName<ScriptWaitFn>
         hookModule,
         "?scriptWait@@YAXK@Z");
 
@@ -266,27 +266,28 @@ void resolveScriptHook(HMODULE frontierModule) {
 void ScriptBridge::registerScript(HMODULE module) {
     resolveScriptHook(module);
 
-    if (!s_scriptRegister || !s_scriptWait) {
+    if (!s_scriptRegisterAdditionalThread || !s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
                 true,
                 std::memory_order_acq_rel)) {
             std::cout
                 << "[ScriptBridge] ScriptHookRDR cargado pero no se pudieron resolver "
-                   "scriptRegister/scriptWait."
+                   "scriptRegisterAdditionalThread/scriptWait."
                 << std::endl;
         }
         return;
     }
 
-    // isRegistered() means that ScriptMain actually started, not merely that
-    // scriptRegister() was called. This allows the launcher to retry while
-    // ScriptHookRDR finishes initializing its scheduler.
+    // Frontier is injected after the game has already begun loading. Use the
+    // additional-script-thread API so the callback is picked up independently
+    // of the main story script scheduler/hash selection.
     if (s_registered.load(std::memory_order_acquire)) {
         return;
     }
 
     const uint64_t now = GetTickCount64();
-    const uint64_t last = s_lastRegistrationTick.load(std::memory_order_acquire);
+    const uint64_t last = s_lastRegistrationTick.load(
+        std::memory_order_acquire);
 
     if (s_registrationInFlight.load(std::memory_order_acquire)) {
         if (now - last < kRegistrationRetryTicks) {
@@ -297,20 +298,27 @@ void ScriptBridge::registerScript(HMODULE module) {
             s_scriptUnregister(module);
             std::cout
                 << "[ScriptBridge] Registro anterior de FrontierMP retirado "
-                   "para reintentar con el scheduler de ScriptHookRDR."
+                   "para reintentar mediante scriptRegisterAdditionalThread."
                 << std::endl;
         }
 
         s_registrationInFlight.store(false, std::memory_order_release);
     }
 
-    s_lastRegistrationTick.store(now, std::memory_order_release);
-    s_registrationInFlight.store(true, std::memory_order_release);
+    s_lastRegistrationTick.store(
+        now,
+        std::memory_order_release);
+    s_registrationInFlight.store(
+        true,
+        std::memory_order_release);
 
-    s_scriptRegister(module, &ScriptBridge::scriptMain);
+    s_scriptRegisterAdditionalThread(
+        module,
+        &ScriptBridge::scriptMain);
 
     std::cout
-        << "[ScriptBridge] Solicitud de registro del hilo FrontierMP enviada a ScriptHookRDR."
+        << "[ScriptBridge] Solicitud de registro del hilo adicional "
+           "FrontierMP enviada a ScriptHookRDR."
         << std::endl;
 }
 
