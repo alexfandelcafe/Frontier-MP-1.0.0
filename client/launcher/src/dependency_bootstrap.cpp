@@ -36,7 +36,7 @@ std::string quotePowerShell(const std::string& value) {
     for (char c : value) {
         if (c == '\\0') {
             quoted += c;
-        } else if (c == '\\'') {
+        } else if (c == '\'') {
             quoted += "''";
         } else {
             quoted += c;
