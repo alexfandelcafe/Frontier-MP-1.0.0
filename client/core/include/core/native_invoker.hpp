@@ -10,8 +10,6 @@ namespace Frontier::Core {
 using ScriptNativeInitFn = void (*)(uint64_t hash);
 using ScriptNativePush64Fn = void (*)(uint64_t value);
 using ScriptNativeCallFn = uint64_t* (*)();
-using ScriptGetCommandFn = void* (*)(uint64_t hash);
-
 class NativeInvoker {
 public:
     static bool initialize();
@@ -20,8 +18,7 @@ public:
     static void setScriptHookApi(
         ScriptNativeInitFn nativeInit,
         ScriptNativePush64Fn nativePush64,
-        ScriptNativeCallFn nativeCall,
-        ScriptGetCommandFn getCommandFromHash);
+        ScriptNativeCallFn nativeCall);
 
     static void beginCall();
 
@@ -61,8 +58,7 @@ private:
     static inline ScriptNativeInitFn s_nativeInit{nullptr};
     static inline ScriptNativePush64Fn s_nativePush64{nullptr};
     static inline ScriptNativeCallFn s_nativeCall{nullptr};
-    static inline ScriptGetCommandFn s_getCommandFromHash{nullptr};
-
+"
     static inline uint64_t s_args[32]{};
     static inline uint32_t s_argCount{0};
     static inline uint64_t s_returnData[4]{};
