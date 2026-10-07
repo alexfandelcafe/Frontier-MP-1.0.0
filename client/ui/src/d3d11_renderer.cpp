@@ -132,16 +132,27 @@ bool D3D11Renderer::initialize(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* p
         }
 
         m_pD3D12Device = pD3D12Device;
-        m_pCommandQueue = pCommandQueue;
+
+        ID3D12CommandQueue* queueRef = nullptr;
+        HRESULT queueHr = pCommandQueue->QueryInterface(
+            __uuidof(ID3D12CommandQueue),
+            reinterpret_cast<void**>(&queueRef));
+        if (FAILED(queueHr) || !queueRef) {
+            std::cerr << "[GraphicsOverlay] El objeto no es una ID3D12CommandQueue válida: 0x"
+                      << std::hex << queueHr << std::dec << std::endl;
+            return false;
+        }
+        m_pCommandQueue = queueRef;
 
         D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+        IUnknown* queues[] = { static_cast<IUnknown*>(m_pCommandQueue) };
         HRESULT hr = D3D11On12CreateDevice(
             pD3D12Device,
             0,
             featureLevels,
-            2,
-            reinterpret_cast<IUnknown**>(&pCommandQueue),
-            1,
+            ARRAYSIZE(featureLevels),
+            queues,
+            ARRAYSIZE(queues),
             0,
             &m_pDevice,
             &m_pContext,
@@ -160,7 +171,13 @@ bool D3D11Renderer::initialize(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* p
         }
 
         DXGI_SWAP_CHAIN_DESC desc{};
-        pSwapChain->GetDesc(&desc);
+        hr = pSwapChain->GetDesc(&desc);
+        if (FAILED(hr) || desc.BufferCount == 0 || desc.BufferCount > 8) {
+            std::cerr << "[GraphicsOverlay] GetDesc/BufferCount inválido: hr=0x"
+                      << std::hex << hr << std::dec
+                      << " buffers=" << desc.BufferCount << std::endl;
+            return false;
+        }
         m_width = desc.BufferDesc.Width;
         m_height = desc.BufferDesc.Height;
         m_bufferCount = desc.BufferCount;
@@ -185,7 +202,19 @@ bool D3D11Renderer::initialize(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* p
                 );
 
                 if (SUCCEEDED(hr) && m_wrappedBuffers[i]) {
-                    m_pDevice->CreateRenderTargetView(m_wrappedBuffers[i], nullptr, &m_renderTargetViews[i]);
+                    hr = m_pDevice->CreateRenderTargetView(
+                        m_wrappedBuffers[i], nullptr, &m_renderTargetViews[i]);
+                    if (FAILED(hr) || !m_renderTargetViews[i]) {
+                        pD3D12Buffer->Release();
+                        std::cerr << "[GraphicsOverlay] CreateRenderTargetView falló para backbuffer "
+                                  << i << ": 0x" << std::hex << hr << std::dec << std::endl;
+                        return false;
+                    }
+                } else {
+                    pD3D12Buffer->Release();
+                    std::cerr << "[GraphicsOverlay] CreateWrappedResource falló para backbuffer "
+                              << i << ": 0x" << std::hex << hr << std::dec << std::endl;
+                    return false;
                 }
                 pD3D12Buffer->Release();
             }
@@ -201,15 +230,35 @@ bool D3D11Renderer::initialize(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* p
         }
 
         m_pDevice->GetImmediateContext(&m_pContext);
+        if (!m_pContext) {
+            std::cerr << "[GraphicsOverlay] No se pudo obtener el ImmediateContext D3D11." << std::endl;
+            return false;
+        }
+
         ID3D11Texture2D* pBackBuffer = nullptr;
-        pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pBackBuffer));
-        if (pBackBuffer) {
-            m_pDevice->CreateRenderTargetView(pBackBuffer, nullptr, &m_pD3D11RTV);
-            pBackBuffer->Release();
+        HRESULT bufferHr = pSwapChain->GetBuffer(
+            0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pBackBuffer));
+        if (FAILED(bufferHr) || !pBackBuffer) {
+            std::cerr << "[GraphicsOverlay] GetBuffer(0) D3D11 falló: 0x"
+                      << std::hex << bufferHr << std::dec << std::endl;
+            return false;
+        }
+        HRESULT rtvHr = m_pDevice->CreateRenderTargetView(
+            pBackBuffer, nullptr, &m_pD3D11RTV);
+        pBackBuffer->Release();
+        if (FAILED(rtvHr) || !m_pD3D11RTV) {
+            std::cerr << "[GraphicsOverlay] CreateRenderTargetView D3D11 falló: 0x"
+                      << std::hex << rtvHr << std::dec << std::endl;
+            return false;
         }
 
         DXGI_SWAP_CHAIN_DESC desc{};
-        pSwapChain->GetDesc(&desc);
+        HRESULT descHr = pSwapChain->GetDesc(&desc);
+        if (FAILED(descHr)) {
+            std::cerr << "[GraphicsOverlay] GetDesc D3D11 falló: 0x"
+                      << std::hex << descHr << std::dec << std::endl;
+            return false;
+        }
         m_width = desc.BufferDesc.Width;
         m_height = desc.BufferDesc.Height;
         m_isD3D12 = false;
@@ -218,6 +267,7 @@ bool D3D11Renderer::initialize(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* p
 
     if (!initPipeline()) {
         std::cerr << "[GraphicsOverlay] Falló la creación del pipeline de renderizado 2D." << std::endl;
+        shutdown();
         return false;
     }
 
@@ -256,59 +306,104 @@ bool D3D11Renderer::initPipeline() {
         }
     )";
 
+    auto checkHr = [](HRESULT hr, const char* operation) -> bool {
+        if (FAILED(hr)) {
+            std::cerr << "[D3D11Renderer] " << operation
+                      << " failed: 0x" << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+        return true;
+    };
+
     ID3DBlob* vsBlob = nullptr;
     ID3DBlob* psBlob = nullptr;
     ID3DBlob* errorBlob = nullptr;
 
-    HRESULT hr = D3DCompile(shaderCode, strlen(shaderCode), nullptr, nullptr, nullptr, "VSMain", "vs_4_0", 0, 0, &vsBlob, &errorBlob);
+    HRESULT hr = D3DCompile(shaderCode, strlen(shaderCode), nullptr, nullptr, nullptr,
+                            "VSMain", "vs_4_0", 0, 0, &vsBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) {
-            std::cerr << "[D3D11Renderer] VS Compile Error: " << (char*)errorBlob->GetBufferPointer() << std::endl;
+            std::cerr << "[D3D11Renderer] VS Compile Error: "
+                      << static_cast<const char*>(errorBlob->GetBufferPointer()) << std::endl;
             errorBlob->Release();
         }
         return false;
     }
+    if (errorBlob) {
+        errorBlob->Release();
+        errorBlob = nullptr;
+    }
 
-    hr = D3DCompile(shaderCode, strlen(shaderCode), nullptr, nullptr, nullptr, "PSMain", "ps_4_0", 0, 0, &psBlob, &errorBlob);
+    hr = D3DCompile(shaderCode, strlen(shaderCode), nullptr, nullptr, nullptr,
+                    "PSMain", "ps_4_0", 0, 0, &psBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) {
-            std::cerr << "[D3D11Renderer] PS Compile Error: " << (char*)errorBlob->GetBufferPointer() << std::endl;
+            std::cerr << "[D3D11Renderer] PS Compile Error: "
+                      << static_cast<const char*>(errorBlob->GetBufferPointer()) << std::endl;
             errorBlob->Release();
         }
         vsBlob->Release();
         return false;
     }
+    if (errorBlob) {
+        errorBlob->Release();
+        errorBlob = nullptr;
+    }
 
-    m_pDevice->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_pVertexShader);
-    m_pDevice->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &m_pPixelShader);
+    if (!checkHr(m_pDevice->CreateVertexShader(
+            vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_pVertexShader),
+            "CreateVertexShader")) {
+        vsBlob->Release();
+        psBlob->Release();
+        return false;
+    }
+
+    if (!checkHr(m_pDevice->CreatePixelShader(
+            psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &m_pPixelShader),
+            "CreatePixelShader")) {
+        vsBlob->Release();
+        psBlob->Release();
+        return false;
+    }
 
     D3D11_INPUT_ELEMENT_DESC layoutDesc[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 }
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 }
     };
 
-    m_pDevice->CreateInputLayout(layoutDesc, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &m_pInputLayout);
+    if (!checkHr(m_pDevice->CreateInputLayout(
+            layoutDesc, ARRAYSIZE(layoutDesc),
+            vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &m_pInputLayout),
+            "CreateInputLayout")) {
+        vsBlob->Release();
+        psBlob->Release();
+        return false;
+    }
+
     vsBlob->Release();
     psBlob->Release();
 
-    // Constant buffer para la matriz ortográfica
     D3D11_BUFFER_DESC cbDesc{};
     cbDesc.ByteWidth = sizeof(float) * 16;
     cbDesc.Usage = D3D11_USAGE_DYNAMIC;
     cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    m_pDevice->CreateBuffer(&cbDesc, nullptr, &m_pConstantBuffer);
+    if (!checkHr(m_pDevice->CreateBuffer(&cbDesc, nullptr, &m_pConstantBuffer),
+                 "CreateBuffer(ConstantBuffer)")) {
+        return false;
+    }
 
-    // Dynamic vertex buffer para batching 2D (hasta 16384 vértices por frame)
     D3D11_BUFFER_DESC vbDesc{};
     vbDesc.ByteWidth = sizeof(Vertex2D) * 16384;
     vbDesc.Usage = D3D11_USAGE_DYNAMIC;
     vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    m_pDevice->CreateBuffer(&vbDesc, nullptr, &m_pVertexBuffer);
+    if (!checkHr(m_pDevice->CreateBuffer(&vbDesc, nullptr, &m_pVertexBuffer),
+                 "CreateBuffer(VertexBuffer)")) {
+        return false;
+    }
 
-    // Blend state para transparencia Alpha
     D3D11_BLEND_DESC blendDesc{};
     blendDesc.RenderTarget[0].BlendEnable = TRUE;
     blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
@@ -318,24 +413,30 @@ bool D3D11Renderer::initPipeline() {
     blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
     blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    m_pDevice->CreateBlendState(&blendDesc, &m_pBlendState);
+    if (!checkHr(m_pDevice->CreateBlendState(&blendDesc, &m_pBlendState),
+                 "CreateBlendState")) {
+        return false;
+    }
 
-    // Sampler state para texturas
     D3D11_SAMPLER_DESC sampDesc{};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    m_pDevice->CreateSamplerState(&sampDesc, &m_pSamplerState);
+    if (!checkHr(m_pDevice->CreateSamplerState(&sampDesc, &m_pSamplerState),
+                 "CreateSamplerState")) {
+        return false;
+    }
 
-    // Rasterizer state sin culling
     D3D11_RASTERIZER_DESC rastDesc{};
     rastDesc.FillMode = D3D11_FILL_SOLID;
     rastDesc.CullMode = D3D11_CULL_NONE;
-    m_pDevice->CreateRasterizerState(&rastDesc, &m_pRasterizerState);
+    if (!checkHr(m_pDevice->CreateRasterizerState(&rastDesc, &m_pRasterizerState),
+                 "CreateRasterizerState")) {
+        return false;
+    }
 
-    // Textura blanca 1x1 para dibujar rectángulos sólidos y bordes
-    uint32_t whitePixel = 0xFFFFFFFF;
+    const uint32_t whitePixel = 0xFFFFFFFF;
     D3D11_TEXTURE2D_DESC texDesc{};
     texDesc.Width = 1;
     texDesc.Height = 1;
@@ -348,11 +449,17 @@ bool D3D11Renderer::initPipeline() {
 
     D3D11_SUBRESOURCE_DATA initData{};
     initData.pSysMem = &whitePixel;
-    initData.SysMemPitch = 4;
-    m_pDevice->CreateTexture2D(&texDesc, &initData, &m_pWhiteTex);
-    m_pDevice->CreateShaderResourceView(m_pWhiteTex, nullptr, &m_pWhiteSRV);
+    initData.SysMemPitch = sizeof(whitePixel);
 
-    // Textura de atlas de fuentes 128x64 construida a partir de s_font8x8
+    if (!checkHr(m_pDevice->CreateTexture2D(&texDesc, &initData, &m_pWhiteTex),
+                 "CreateTexture2D(White)")) {
+        return false;
+    }
+    if (!checkHr(m_pDevice->CreateShaderResourceView(m_pWhiteTex, nullptr, &m_pWhiteSRV),
+                 "CreateShaderResourceView(White)")) {
+        return false;
+    }
+
     std::vector<uint32_t> fontPixels(128 * 64, 0x00000000);
     for (int ch = 0; ch < 96; ++ch) {
         int cellX = (ch % 16) * 8;
@@ -379,9 +486,16 @@ bool D3D11Renderer::initPipeline() {
 
     D3D11_SUBRESOURCE_DATA fontData{};
     fontData.pSysMem = fontPixels.data();
-    fontData.SysMemPitch = 128 * 4;
-    m_pDevice->CreateTexture2D(&fontDesc, &fontData, &m_pFontTex);
-    m_pDevice->CreateShaderResourceView(m_pFontTex, nullptr, &m_pFontSRV);
+    fontData.SysMemPitch = 128 * sizeof(uint32_t);
+
+    if (!checkHr(m_pDevice->CreateTexture2D(&fontDesc, &fontData, &m_pFontTex),
+                 "CreateTexture2D(FontAtlas)")) {
+        return false;
+    }
+    if (!checkHr(m_pDevice->CreateShaderResourceView(m_pFontTex, nullptr, &m_pFontSRV),
+                 "CreateShaderResourceView(FontAtlas)")) {
+        return false;
+    }
 
     return true;
 }
@@ -782,24 +896,31 @@ void D3D11Renderer::onResize() {
 
 void D3D11Renderer::shutdown() {
     onResize();
-    if (m_pWhiteSRV) m_pWhiteSRV->Release();
-    if (m_pWhiteTex) m_pWhiteTex->Release();
-    if (m_pFontSRV) m_pFontSRV->Release();
-    if (m_pFontTex) m_pFontTex->Release();
-    if (m_pConstantBuffer) m_pConstantBuffer->Release();
-    if (m_pVertexBuffer) m_pVertexBuffer->Release();
-    if (m_pInputLayout) m_pInputLayout->Release();
-    if (m_pVertexShader) m_pVertexShader->Release();
-    if (m_pPixelShader) m_pPixelShader->Release();
-    if (m_pBlendState) m_pBlendState->Release();
-    if (m_pSamplerState) m_pSamplerState->Release();
-    if (m_pRasterizerState) m_pRasterizerState->Release();
-    if (m_pD3D11On12Device) m_pD3D11On12Device->Release();
-    if (m_pContext) m_pContext->Release();
-    if (m_pDevice) m_pDevice->Release();
+
+    if (m_pWhiteSRV) { m_pWhiteSRV->Release(); m_pWhiteSRV = nullptr; }
+    if (m_pWhiteTex) { m_pWhiteTex->Release(); m_pWhiteTex = nullptr; }
+    if (m_pFontSRV) { m_pFontSRV->Release(); m_pFontSRV = nullptr; }
+    if (m_pFontTex) { m_pFontTex->Release(); m_pFontTex = nullptr; }
+    if (m_pConstantBuffer) { m_pConstantBuffer->Release(); m_pConstantBuffer = nullptr; }
+    if (m_pVertexBuffer) { m_pVertexBuffer->Release(); m_pVertexBuffer = nullptr; }
+    if (m_pInputLayout) { m_pInputLayout->Release(); m_pInputLayout = nullptr; }
+    if (m_pVertexShader) { m_pVertexShader->Release(); m_pVertexShader = nullptr; }
+    if (m_pPixelShader) { m_pPixelShader->Release(); m_pPixelShader = nullptr; }
+    if (m_pBlendState) { m_pBlendState->Release(); m_pBlendState = nullptr; }
+    if (m_pSamplerState) { m_pSamplerState->Release(); m_pSamplerState = nullptr; }
+    if (m_pRasterizerState) { m_pRasterizerState->Release(); m_pRasterizerState = nullptr; }
+    if (m_pD3D11On12Device) { m_pD3D11On12Device->Release(); m_pD3D11On12Device = nullptr; }
+    if (m_pContext) { m_pContext->Release(); m_pContext = nullptr; }
+    if (m_pDevice) { m_pDevice->Release(); m_pDevice = nullptr; }
+    if (m_pD3D12Device) { m_pD3D12Device->Release(); m_pD3D12Device = nullptr; }
+    if (m_pCommandQueue) { m_pCommandQueue->Release(); m_pCommandQueue = nullptr; }
+
+    m_wrappedBuffers.clear();
+    m_renderTargetViews.clear();
+    m_pCurrentSRV = nullptr;
+    m_isD3D12 = false;
     m_initialized = false;
 }
-
 void D3D11Renderer::addChatMessage(const std::string& msg) {
     ChatEntry entry;
     entry.text = msg;
