@@ -26,7 +26,7 @@ T resolveMangledExport(HMODULE module, const char* token) {
         return nullptr;
     }
 
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERSA*>(
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
         reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
         return nullptr;
