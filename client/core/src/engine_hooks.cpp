@@ -288,8 +288,29 @@ void EngineHooks::processMultiplayerWorldLoad() {
         return;
     }
 
+    // NativeInvoker puede no estar resuelto durante el arranque. La
+    // transición no debe quedar bloqueada esperando una inicialización que
+    // ocurrió demasiado pronto en EngineHooks::initialize().
+    static std::atomic<bool> s_nativeInitLogged{false};
+    static uint32_t s_nativeInitPollCounter = 0;
+
     if (!NativeInvoker::isReady()) {
-        return;
+        ++s_nativeInitPollCounter;
+
+        const bool initialized = NativeInvoker::initialize();
+        if (initialized && !s_nativeInitLogged.exchange(true, std::memory_order_acq_rel)) {
+            std::cout << "[EngineHooks] NativeInvoker resuelto durante el fallback de carga multiplayer."
+                      << std::endl;
+        }
+
+        if (!NativeInvoker::isReady()) {
+            if ((s_nativeInitPollCounter % 120) == 0) {
+                std::cerr << "[EngineHooks] NativeInvoker aún no está listo; "
+                             "no se puede ejecutar la transición multiplayer."
+                          << std::endl;
+            }
+            return;
+        }
     }
 
     static uint32_t s_readyPollCounter = 0;
