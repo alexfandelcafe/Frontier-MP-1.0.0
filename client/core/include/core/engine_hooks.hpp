@@ -18,6 +18,7 @@ public:
     static bool isSingleplayerBlocked();
     static void setSingleplayerBlocked(bool blocked);
     static void requestMultiplayerWorldLoad();
+    static void processMultiplayerWorldLoad();
 
     // Callbacks del ciclo de vida
     static void onScriptTick();

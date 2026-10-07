@@ -260,79 +260,81 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // La resolución de natives puede ocurrir durante los primeros Wait() del juego,
-    // pero NO ejecutamos natives arbitrarias en estado idle. En particular,
-    // GET_SCRIPT_NAME no es necesario para la transición multiplayer y podía
-    // provocar una AV en esta fase temprana del arranque.
+    // Interceptor pasivo: no ejecutamos natives de transición desde Wait().
+    // La transición multiplayer se procesa desde el bucle persistente de Frontier,
+    // que sigue vivo después de pulsar Join aunque el frontend deje de llamar Wait().
     static std::atomic<uint32_t> s_waitHookCalls{0};
     static std::atomic<bool> s_nativeReadyLogged{false};
 
-    const uint32_t waitCall = s_waitHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint32_t waitCall =
+        s_waitHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+
     if (!NativeInvoker::isReady()) {
         NativeInvoker::initialize();
     }
 
     const bool nativeReady = NativeInvoker::isReady();
-    if (nativeReady && !s_nativeReadyLogged.exchange(true, std::memory_order_acq_rel)) {
+    if (nativeReady &&
+        !s_nativeReadyLogged.exchange(true, std::memory_order_acq_rel)) {
         std::cout << "[EngineHooks] NativeInvoker listo dentro de rage::scrThread::Wait." << std::endl;
     } else if (!nativeReady && (waitCall % 120) == 0) {
         std::cout << "[EngineHooks] rage::scrThread::Wait activo; NativeInvoker aún no está listo (reintentando)." << std::endl;
     }
 
-    const bool multiplayerWorldRequested =
-        s_multiplayerWorldRequested.load(std::memory_order_acquire);
-
-    // La transición multiplayer es el único momento en que HookedWait utiliza
-    // natives del juego. Así evitamos tocar el sistema de scripts durante el
-    // arranque normal del title screen.
-    if (multiplayerWorldRequested && nativeReady) {
-        if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
-            std::cout << "[EngineHooks] Invocando MULTIPLAYER_LOAD_PREPARE..." << std::endl;
-            NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
-            std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
-        }
-
-        if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
-            std::cout << "[EngineHooks] Consultando MULTIPLAYER_LOAD_READY_CHECK..." << std::endl;
-
-            // FUN_180054060() del cliente RDRMP original devuelve distinto de
-            // cero mientras el juego todavía está preparando la carga.
-            const bool stillPreparing =
-                NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
-
-            if (stillPreparing) {
-                if (s_originalWait) {
-                    // El cliente original usa Wait(0) dentro de este bucle.
-                    s_originalWait(scrThread, 0);
-                }
-                return;
-            }
-
-            s_multiplayerTransitionStarted.store(true, std::memory_order_release);
-            std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
-
-            std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
-            NativeInvoker::invoke<void>(
-                Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
-
-            std::cout << "[EngineHooks] Invocando fileStartupChecksComplete..." << std::endl;
-            NativeInvoker::invoke<void>(
-                Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
-
-            std::cout << "[EngineHooks] Invocando StartScreen1..." << std::endl;
-            NativeInvoker::invoke<void>(
-                Natives::START_SCREEN_1, "StartScreen1");
-
-            std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
-        }
-
-        // Mantener el spawn dentro del contexto de una fibra RAGE válida.
-        PlayerFactory::processPendingSpawn();
-    }
-
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
+}
+
+void EngineHooks::processMultiplayerWorldLoad() {
+    if (!s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (!NativeInvoker::isReady()) {
+        return;
+    }
+
+    static uint32_t s_readyPollCounter = 0;
+
+    if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
+        std::cout << "[EngineHooks] Invocando MULTIPLAYER_LOAD_PREPARE..." << std::endl;
+        NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
+        std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
+    }
+
+    if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+        ++s_readyPollCounter;
+
+        const bool stillPreparing =
+            NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+
+        if (stillPreparing) {
+            if ((s_readyPollCounter % 60) == 0) {
+                std::cout << "[EngineHooks] Esperando a que RDR1 termine de preparar la carga online..." << std::endl;
+            }
+            return;
+        }
+
+        s_multiplayerTransitionStarted.store(true, std::memory_order_release);
+        std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
+
+        std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
+
+        std::cout << "[EngineHooks] Invocando fileStartupChecksComplete..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
+
+        std::cout << "[EngineHooks] Invocando StartScreen1..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::START_SCREEN_1, "StartScreen1");
+
+        std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
+    }
+
+    PlayerFactory::processPendingSpawn();
 }
 
 bool EngineHooks::hookScriptThread() {
