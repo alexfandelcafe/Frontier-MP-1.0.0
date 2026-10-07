@@ -80,6 +80,59 @@ bool isExecutableAddress(uintptr_t address) {
            protection == PAGE_EXECUTE_WRITECOPY;
 }
 
+bool readQword(uintptr_t address, uint64_t* outValue) {
+    if (!outValue || !isReadableAddress(address, sizeof(uint64_t))) {
+        return false;
+    }
+    *outValue = *reinterpret_cast<const uint64_t*>(address);
+    return true;
+}
+
+void dumpRegistrationLayout(uintptr_t registration) {
+    std::ostringstream line;
+    line << "[NativeInvoker] Inspeccionando layout de sm_CommandsRegistration en "
+         << hexValue(registration);
+    appendNativeLog(line.str());
+    std::cerr << line.str() << std::endl;
+
+    for (uint32_t offset = 0; offset <= 0x38; offset += 8) {
+        uint64_t value = 0;
+        if (readQword(registration + offset, &value)) {
+            std::ostringstream field;
+            field << "[NativeInvoker] reg+" << std::hex << offset
+                  << " = 0x" << value << std::dec;
+            appendNativeLog(field.str());
+            std::cerr << field.str() << std::endl;
+        } else {
+            std::ostringstream field;
+            field << "[NativeInvoker] reg+" << std::hex << offset
+                  << " = <unreadable>" << std::dec;
+            appendNativeLog(field.str());
+            std::cerr << field.str() << std::endl;
+        }
+    }
+
+    uint64_t maybeTable = 0;
+    if (readQword(registration + 8, &maybeTable) && maybeTable) {
+        std::ostringstream field;
+        field << "[NativeInvoker] Candidato de tabla en reg+8: "
+              << hexValue(static_cast<uintptr_t>(maybeTable));
+        appendNativeLog(field.str());
+        std::cerr << field.str() << std::endl;
+
+        for (uint32_t offset = 0; offset <= 0x30; offset += 8) {
+            uint64_t value = 0;
+            if (readQword(static_cast<uintptr_t>(maybeTable) + offset, &value)) {
+                std::ostringstream entry;
+                entry << "[NativeInvoker] candidateTable+" << std::hex << offset
+                      << " = 0x" << value << std::dec;
+                appendNativeLog(entry.str());
+                std::cerr << entry.str() << std::endl;
+            }
+        }
+    }
+}
+
 // Estos helpers contienen solo tipos POD. MSVC permite __try/__except aquí
 // sin activar C2712 en las funciones que construyen objetos C++.
 int sehGetCommand(
@@ -214,7 +267,7 @@ bool NativeInvoker::initialize() {
         return false;
     }
 
-    if (s_commandsRegistration && s_commandsRegistration[0] != 0) {
+    if (s_layoutConfirmed.load(std::memory_order_acquire)) {
         return true;
     }
 
@@ -272,17 +325,19 @@ bool NativeInvoker::initialize() {
         return false;
     }
 
-    if (s_commandsRegistration[0] != 0) {
-        std::ostringstream line;
-        line << "[NativeInvoker] rage::scrThread::sm_CommandsRegistration listo en "
-             << hexValue(reinterpret_cast<uintptr_t>(s_commandsRegistration))
-             << " table=" << hexValue(s_commandsRegistration[0])
-             << " capacity=" << s_commandsRegistration[1];
-        std::cout << line.str() << std::endl;
-        appendNativeLog(line.str());
-        return true;
+    static bool layoutDumped = false;
+    if (!layoutDumped) {
+        layoutDumped = true;
+        dumpRegistrationLayout(reinterpret_cast<uintptr_t>(s_commandsRegistration));
+        appendNativeLog(
+            "[NativeInvoker] Layout no confirmado: no se ejecutaran natives hasta identificar "
+            "la estructura real de sm_CommandsRegistration.");
     }
 
+    // La implementación anterior asumía que reg[0] era un puntero a tabla y
+    // reg[1] su capacidad. La salida de RDR demuestra que esa interpretación
+    // es incorrecta (0x100000000 y 0x142c8b028). No marcamos el invocador como
+    // listo ni ejecutamos hashes con un layout no confirmado.
     return false;
 }
 
