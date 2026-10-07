@@ -17,10 +17,14 @@ namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
+using ScriptUnregisterFn = void (*)(HMODULE);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
+ScriptUnregisterFn s_scriptUnregister = nullptr;
 std::atomic<bool> s_exportsDumped{false};
+
+constexpr uint64_t kRegistrationRetryTicks = 3000;
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -225,6 +229,17 @@ void resolveScriptHook(HMODULE frontierModule) {
                 "scriptWait");
     }
 
+    s_scriptUnregister = getExportByExactName<ScriptUnregisterFn>(
+        hookModule,
+        "?scriptUnregister@@YAXPEAUHINSTANCE__@@@Z");
+
+    if (!s_scriptUnregister) {
+        s_scriptUnregister =
+            resolveMangledExport<ScriptUnregisterFn>(
+                hookModule,
+                "scriptUnregister");
+    }
+
     const auto nativeInit =
         getExportByExactName<ScriptNativeInitFn>(
             hookModule,
@@ -263,16 +278,39 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    if (s_registered.exchange(
-            true,
-            std::memory_order_acq_rel)) {
+    // isRegistered() means that ScriptMain actually started, not merely that
+    // scriptRegister() was called. This allows the launcher to retry while
+    // ScriptHookRDR finishes initializing its scheduler.
+    if (s_registered.load(std::memory_order_acquire)) {
         return;
     }
+
+    const uint64_t now = GetTickCount64();
+    const uint64_t last = s_lastRegistrationTick.load(std::memory_order_acquire);
+
+    if (s_registrationInFlight.load(std::memory_order_acquire)) {
+        if (now - last < kRegistrationRetryTicks) {
+            return;
+        }
+
+        if (s_scriptUnregister) {
+            s_scriptUnregister(module);
+            std::cout
+                << "[ScriptBridge] Registro anterior de FrontierMP retirado "
+                   "para reintentar con el scheduler de ScriptHookRDR."
+                << std::endl;
+        }
+
+        s_registrationInFlight.store(false, std::memory_order_release);
+    }
+
+    s_lastRegistrationTick.store(now, std::memory_order_release);
+    s_registrationInFlight.store(true, std::memory_order_release);
 
     s_scriptRegister(module, &ScriptBridge::scriptMain);
 
     std::cout
-        << "[ScriptBridge] Hilo de script FrontierMP registrado en ScriptHookRDR."
+        << "[ScriptBridge] Solicitud de registro del hilo FrontierMP enviada a ScriptHookRDR."
         << std::endl;
 }
 
@@ -281,6 +319,9 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
+    s_registered.store(true, std::memory_order_release);
+    s_registrationInFlight.store(false, std::memory_order_release);
+
     std::cout
         << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
         << std::endl;
