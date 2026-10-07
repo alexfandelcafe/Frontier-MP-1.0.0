@@ -108,7 +108,7 @@ int nativeExceptionFilter(EXCEPTION_POINTERS* exceptionInfo, const char* phase, 
 } // namespace
 
 bool NativeInvoker::initialize() {
-    if (s_faulted) {
+    if (s_faulted.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -201,7 +201,7 @@ void NativeInvoker::init(uintptr_t getCommandAddress) {
 }
 
 scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
-    if (s_faulted) {
+    if (s_faulted.load(std::memory_order_acquire)) {
         return nullptr;
     }
 
@@ -214,7 +214,7 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
         __except (nativeExceptionFilter(GetExceptionInformation(),
                                          "s_getCommandFunc",
                                          targetHash)) {
-            s_faulted = true;
+            s_faulted.store(true, std::memory_order_release);
             return nullptr;
         }
 
@@ -253,7 +253,7 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
     __except (nativeExceptionFilter(GetExceptionInformation(),
                                     "lectura de sm_CommandsRegistration",
                                     targetHash)) {
-        s_faulted = true;
+        s_faulted.store(true, std::memory_order_release);
         return nullptr;
     }
 
@@ -301,7 +301,7 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
         __except (nativeExceptionFilter(GetExceptionInformation(),
                                         "lectura de entrada nativa",
                                         targetHash)) {
-            s_faulted = true;
+            s_faulted.store(true, std::memory_order_release);
             return nullptr;
         }
 
@@ -346,7 +346,7 @@ void NativeInvoker::beginCall() {
 }
 
 void NativeInvoker::endCall(uint32_t hash) {
-    if (s_faulted) {
+    if (s_faulted.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -358,7 +358,7 @@ void NativeInvoker::endCall(uint32_t hash) {
     __except (nativeExceptionFilter(GetExceptionInformation(),
                                     "findNative",
                                     hash)) {
-        s_faulted = true;
+        s_faulted.store(true, std::memory_order_release);
         return;
     }
 
@@ -386,7 +386,7 @@ void NativeInvoker::endCall(uint32_t hash) {
     __except (nativeExceptionFilter(GetExceptionInformation(),
                                     "handler nativo",
                                     hash)) {
-        s_faulted = true;
+        s_faulted.store(true, std::memory_order_release);
         std::cerr << "[NativeInvoker] Se deshabilitó el invocador tras la excepción." << std::endl;
         appendNativeLog("[NativeInvoker] Se deshabilitó el invocador tras la excepción.");
         return;
