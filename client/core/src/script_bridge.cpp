@@ -16,14 +16,11 @@ namespace Frontier::Core {
 namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
-using ScriptRegisterAdditionalThreadFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
-ScriptRegisterAdditionalThreadFn s_scriptRegisterAdditionalThread = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 std::atomic<bool> s_exportsDumped{false};
-std::atomic<uint64_t> s_registrationRequestedAt{0};
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -136,68 +133,6 @@ void dumpRelevantExports(HMODULE module) {
               << relevant << std::endl;
 }
 
-HMODULE ensureScriptHookLoaded(HMODULE frontierModule) {
-    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (hookModule) {
-        std::cout << "[ScriptBridge] ScriptHookRDR.dll ya estaba cargado en 0x"
-                  << std::hex
-                  << reinterpret_cast<uintptr_t>(hookModule)
-                  << std::dec << std::endl;
-        return hookModule;
-    }
-
-    static std::atomic<bool> loadDiagnosticsPrinted{false};
-    DWORD clientLoadError = ERROR_SUCCESS;
-
-    // Frontier controls this runtime dependency. Never look in the game folder.
-    char ownPath[MAX_PATH] = {};
-
-    if (frontierModule &&
-        GetModuleFileNameA(frontierModule, ownPath, MAX_PATH)) {
-
-        std::string modulePath(ownPath);
-        const size_t slash = modulePath.find_last_of("\\/");
-
-        if (slash != std::string::npos) {
-            modulePath.resize(slash + 1);
-            modulePath += "ScriptHookRDR.dll";
-
-            hookModule = LoadLibraryExA(
-                modulePath.c_str(),
-                nullptr,
-                LOAD_WITH_ALTERED_SEARCH_PATH);
-
-            if (hookModule) {
-                std::cout
-                    << "[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier: "
-                    << modulePath << std::endl;
-                return hookModule;
-            }
-
-            clientLoadError = GetLastError();
-
-            if (!loadDiagnosticsPrinted.exchange(
-                    true,
-                    std::memory_order_acq_rel)) {
-                std::cerr
-                    << "[ScriptBridge] Falló LoadLibraryEx de la dependencia "
-                       "del cliente: "
-                    << modulePath
-                    << " | GetLastError=" << clientLoadError
-                    << std::endl;
-            }
-        }
-    }
-
-    std::ostringstream diagnostic;
-    diagnostic
-        << "[ScriptBridge] ScriptHookRDR.dll no pudo cargarse desde el cliente"
-        << " | clientError=" << clientLoadError;
-
-    std::cerr << diagnostic.str() << std::endl;
-    return nullptr;
-}
-
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
 
@@ -261,37 +196,70 @@ void resolveScriptHook(HMODULE frontierModule) {
             hookModule,
             "?nativeCall@@YAPEA_KXZ");
 
-    NativeInvoker::setScriptHookApi(
-        nativeInit,
-        nativePush64,
-        nativeCall);
+    Nvoid resolveScriptHook(HMODULE frontierModule) {
+    (void)frontierModule;
+
+    // The launcher owns ScriptHookRDR loading. Frontier only observes an
+    // already-loaded module here so it cannot race the loader or alter the
+    // game installation.
+    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule) {
+        return;
+    }
+
+    s_scriptRegister = getExportByExactName<ScriptRegisterFn>(
+        hookModule,
+        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!s_scriptRegister) {
+        s_scriptRegister =
+            resolveMangledExport<ScriptRegisterFn>(hookModule, "scriptRegister");
+    }
+
+    s_scriptWait = getExportByExactName<ScriptWaitFn>(
+        hookModule,
+        "?scriptWait@@YAXK@Z");
+
+    if (!s_scriptWait) {
+        s_scriptWait =
+            resolveMangledExport<ScriptWaitFn>(hookModule, "scriptWait");
+    }
+
+    const auto nativeInit =
+        getExportByExactName<ScriptNativeInitFn>(
+            hookModule,
+            "?nativeInit@@YAX_K@Z");
+    const auto nativePush64 =
+        getExportByExactName<ScriptNativePush64Fn>(
+            hookModule,
+            "?nativePush64@@YAX_K@Z");
+    const auto nativeCall =
+        getExportByExactName<ScriptNativeCallFn>(
+            hookModule,
+            "?nativeCall@@YAPEA_KXZ");
+
+    static std::atomic<bool> nativeApiBound{false};
+    if (!nativeApiBound.exchange(true, std::memory_order_acq_rel)) {
+        NativeInvoker::setScriptHookApi(
+            nativeInit,
+            nativePush64,
+            nativeCall);
+    }
 }
 
 } // namespace
 
 void ScriptBridge::registerScriptEarly(HMODULE module) {
-    // Fast path for the normal SDK lifecycle: if ScriptHook is already loaded
-    // when Frontier attaches, register immediately. No logging, filesystem I/O,
-    // or native initialization is performed here.
-    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule || !module) {
-        return;
-    }
-
-    const auto registerFn = getExportByExactName<ScriptRegisterFn>(
-        hookModule,
-        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!registerFn) {
-        return;
-    }
-
-    registerFn(module, &ScriptBridge::scriptMain);
-    s_registrationRequestedAt.store(GetTickCount64(), std::memory_order_release);
+    // Do not register from DLL_PROCESS_ATTACH. ScriptHookRDR creates its own
+    // worker and installs the RAGE Run/Reset/Fiber hooks asynchronously.
+    // Registration is submitted once that scheduler is demonstrably ready.
+    (void)module;
 }
 
 void ScriptBridge::tryRegister(HMODULE module) {
-    if (!module || s_registered.load(std::memory_order_acquire)) {
+    if (!module ||
+        s_registered.load(std::memory_order_acquire) ||
+        s_registrationRequested.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -300,94 +268,57 @@ void ScriptBridge::tryRegister(HMODULE module) {
         return;
     }
 
-    // Resolve the registration functions only after leaving DLL_PROCESS_ATTACH.
-    s_scriptRegister = getExportByExactName<ScriptRegisterFn>(
-        hookModule,
-        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-    if (!s_scriptRegister) {
-        s_scriptRegister =
-            resolveMangledExport<ScriptRegisterFn>(hookModule, "scriptRegister");
-    }
-
-    s_scriptRegisterAdditionalThread =
-        getExportByExactName<ScriptRegisterAdditionalThreadFn>(
-            hookModule,
-            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-    if (!s_scriptRegisterAdditionalThread) {
-        s_scriptRegisterAdditionalThread =
-            resolveMangledExport<ScriptRegisterAdditionalThreadFn>(
-                hookModule,
-                "scriptRegisterAdditionalThread");
-    }
-
-    s_scriptWait = getExportByExactName<ScriptWaitFn>(
-        hookModule,
-        "?scriptWait@@YAXK@Z");
-    if (!s_scriptWait) {
-        s_scriptWait =
-            resolveMangledExport<ScriptWaitFn>(hookModule, "scriptWait");
-    }
-
-    if (!s_scriptRegister) {
-        return;
-    }
-
-    const uint64_t now = GetTickCount64();
-    const uint64_t requestedAt =
-        s_registrationRequestedAt.load(std::memory_order_acquire);
-
-    // First attempt happens once, as soon as ScriptHook's module exists. This
-    // mirrors the ASI lifecycle without requiring the game installation.
-    if (requestedAt == 0) {
-        s_scriptRegister(module, &ScriptBridge::scriptMain);
-        s_registrationRequestedAt.store(now, std::memory_order_release);
-        std::cout
-            << "[ScriptBridge] scriptRegister enviado en cuanto ScriptHookRDR "
-               "apareció en el proceso."
-            << std::endl;
-        return;
-    }
-
-    // If the regular registration was not materialized into a script stack
-    // after a few seconds, use the dedicated additional-thread API once. The
-    // callback itself protects against executing two copies of our script.
-    if (!s_additionalThreadRegistrationAttempted.load(std::memory_order_acquire) &&
-        now >= requestedAt + 3000 &&
-        s_scriptRegisterAdditionalThread) {
-
-        bool expected = false;
-        if (s_additionalThreadRegistrationAttempted.compare_exchange_strong(
-                expected,
-                true,
-                std::memory_order_acq_rel,
-                std::memory_order_acquire)) {
-            s_scriptRegisterAdditionalThread(module, &ScriptBridge::scriptMain);
-            std::cout
-                << "[ScriptBridge] scriptRegisterAdditionalThread enviado como "
-                   "fallback después de 3 segundos."
-                << std::endl;
-        }
-    }
-}
-
-void ScriptBridge::initialize(HMODULE module) {
     resolveScriptHook(module);
-    tryRegister(module);
-
-    if (!GetModuleHandleA("ScriptHookRDR.dll")) {
+    if (!s_scriptRegister) {
         return;
     }
 
-    if (!s_scriptWait) {
-        if (!s_warnedUnavailable.exchange(
+    const auto base = reinterpret_cast<const uint8_t*>(hookModule);
+
+    // These are ScriptHookRDR 1.5.2's own globals from the decompilation:
+    // +0x20e4a8 = resolved rage::scrThread::Run target
+    // +0x20e3f0 = original Run pointer saved by the hook manager.
+    // Both become non-zero only after ScriptHook has completed the Run hook
+    // setup that drains the registration queue.
+    const uintptr_t runTarget =
+        *reinterpret_cast<const uintptr_t*>(base + 0x20e4a8);
+    const uintptr_t originalRun =
+        *reinterpret_cast<const uintptr_t*>(base + 0x20e3f0);
+
+    if (runTarget == 0 || originalRun == 0) {
+        if (!s_schedulerReadyLogged.exchange(
                 true,
                 std::memory_order_acq_rel)) {
-            std::cerr
-                << "[ScriptBridge] ScriptHookRDR está cargado, pero scriptWait "
-                   "no pudo resolverse."
+            std::cout
+                << "[ScriptBridge] ScriptHookRDR cargado; esperando a que "
+                   "termine el hook de rage::scrThread::Run."
                 << std::endl;
         }
+        return;
     }
+
+    if (!s_schedulerReadyLogged.exchange(
+            true,
+            std::memory_order_acq_rel)) {
+        std::cout
+            << "[ScriptBridge] Scheduler de ScriptHookRDR listo: Run target=0x"
+            << std::hex << runTarget
+            << " original=0x" << originalRun
+            << std::dec << std::endl;
+    }
+
+    if (s_registrationRequested.exchange(
+            true,
+            std::memory_order_acq_rel)) {
+        return;
+    }
+
+    s_scriptRegister(module, &ScriptBridge::scriptMain);
+
+    std::cout
+        << "[ScriptBridge] scriptRegister enviado después de instalar "
+           "rage::scrThread::Run."
+        << std::endl;
 }
 
 bool ScriptBridge::isRegistered() {
