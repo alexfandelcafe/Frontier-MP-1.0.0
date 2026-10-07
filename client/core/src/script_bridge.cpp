@@ -16,50 +16,22 @@ ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 
 template <typename T>
-T resolveMangledExport(HMODULE module, const char* token) {
-    if (!module || !token || !*token) {
+T resolveExportCandidates(HMODULE module, const char* const* names, size_t count) {
+    if (!module || !names) {
         return nullptr;
     }
 
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        return nullptr;
-    }
-
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
-        reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        return nullptr;
-    }
-
-    const auto& directory =
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (!directory.VirtualAddress || !directory.Size) {
-        return nullptr;
-    }
-
-    const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
-        reinterpret_cast<const uint8_t*>(module) + directory.VirtualAddress);
-
-    const auto* names = reinterpret_cast<const DWORD*>(
-        reinterpret_cast<const uint8_t*>(module) + exports->AddressOfNames);
-
-    for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
-        const char* exportedName = reinterpret_cast<const char*>(
-            reinterpret_cast<const uint8_t*>(module) + names[i]);
-
-        const char* match = std::strstr(exportedName, token);
-        if (!match) {
+    for (size_t i = 0; i < count; ++i) {
+        if (!names[i] || !*names[i]) {
             continue;
         }
 
-        const char after = match[std::strlen(token)];
-        if (after != '\0' && after != '@') {
-            continue;
-        }
-
-        FARPROC proc = GetProcAddress(module, exportedName);
+        FARPROC proc = GetProcAddress(module, names[i]);
         if (proc) {
+            std::cout << "[ScriptBridge] Export encontrado: " << names[i]
+                      << " @0x" << std::hex
+                      << reinterpret_cast<uintptr_t>(proc)
+                      << std::dec << std::endl;
             return reinterpret_cast<T>(proc);
         }
     }
@@ -73,23 +45,47 @@ void resolveScriptHook() {
         return;
     }
 
-    s_scriptRegister = resolveMangledExport<ScriptRegisterFn>(
-        hookModule, "scriptRegister");
-    s_scriptWait = resolveMangledExport<ScriptWaitFn>(
-        hookModule, "scriptWait");
+    const char* scriptRegisterNames[] = {
+        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z",
+        "scriptRegister"
+    };
+    const char* scriptWaitNames[] = {
+        "?scriptWait@@YAXK@Z",
+        "scriptWait"
+    };
+    const char* nativeInitNames[] = {
+        "?nativeInit@@YAX_K@Z",
+        "nativeInit"
+    };
+    const char* nativePushNames[] = {
+        "?nativePush64@@YAX_K@Z",
+        "?nativePush@@YAX_K@Z",
+        "nativePush64",
+        "nativePush"
+    };
+    const char* nativeCallNames[] = {
+        "?nativeCall@@YAPEA_KXZ",
+        "?nativeCall@@YAPEA_K@Z",
+        "nativeCall"
+    };
 
-    const auto nativeInit = resolveMangledExport<ScriptNativeInitFn>(
-        hookModule, "nativeInit");
-    const auto nativePush64 = resolveMangledExport<ScriptNativePush64Fn>(
-        hookModule, "nativePush64");
-    const auto nativeCall = resolveMangledExport<ScriptNativeCallFn>(
-        hookModule, "nativeCall");
+    s_scriptRegister = resolveExportCandidates<ScriptRegisterFn>(
+        hookModule, scriptRegisterNames, sizeof(scriptRegisterNames) / sizeof(scriptRegisterNames[0]));
+    s_scriptWait = resolveExportCandidates<ScriptWaitFn>(
+        hookModule, scriptWaitNames, sizeof(scriptWaitNames) / sizeof(scriptWaitNames[0]));
+
+    const auto nativeInit = resolveExportCandidates<ScriptNativeInitFn>(
+        hookModule, nativeInitNames, sizeof(nativeInitNames) / sizeof(nativeInitNames[0]));
+    const auto nativePush64 = resolveExportCandidates<ScriptNativePush64Fn>(
+        hookModule, nativePushNames, sizeof(nativePushNames) / sizeof(nativePushNames[0]));
+    const auto nativeCall = resolveExportCandidates<ScriptNativeCallFn>(
+        hookModule, nativeCallNames, sizeof(nativeCallNames) / sizeof(nativeCallNames[0]));
+
     NativeInvoker::setScriptHookApi(
         nativeInit,
         nativePush64,
         nativeCall);
 }
-
 } // namespace
 
 void ScriptBridge::registerScript(HMODULE module) {
