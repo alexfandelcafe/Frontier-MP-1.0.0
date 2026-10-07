@@ -261,41 +261,53 @@ bool EngineHooks::hookGraphics() {
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
     if (NativeInvoker::isReady()) {
-        const char* scriptName = NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
-        const bool isTransitionScript = scriptName &&
-            (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0);
+        const bool multiplayerWorldRequested =
+            s_multiplayerWorldRequested.load(std::memory_order_acquire);
 
-        if (isTransitionScript && s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
-            // Reproducir la primera parte de LoadOnline del cliente original:
-            // FUN_1800541b0() prepara el estado y FUN_180054060() indica cuándo
-            // el juego ya permite continuar con fileSetForMPLoad.
+        // La secuencia LoadOnline del cliente RDRMP original se ejecuta desde
+        // una fibra de script, no necesariamente desde "press_start" o "main".
+        // Enganchamos la transición al primer Wait() de cualquier fibra RAGE
+        // después de pulsar Join.
+        if (multiplayerWorldRequested) {
             if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
                 NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
                 std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
             }
 
             if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+                // FUN_180054060() del cliente RDRMP original devuelve distinto de
+                // cero mientras el juego todavía está preparando la carga.
                 const bool stillPreparing =
                     NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+
                 if (stillPreparing) {
                     if (s_originalWait) {
-                        s_originalWait(scrThread, waitTime);
+                        // El cliente original usa Wait(0) dentro de este bucle.
+                        s_originalWait(scrThread, 0);
                     }
                     return;
                 }
 
                 s_multiplayerTransitionStarted.store(true, std::memory_order_release);
                 std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
-                NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
-                NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
-                NativeInvoker::invoke<void>(Natives::START_SCREEN_1, "StartScreen1");
+                NativeInvoker::invoke<void>(
+                    Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
+                NativeInvoker::invoke<void>(
+                    Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
+                NativeInvoker::invoke<void>(
+                    Natives::START_SCREEN_1, "StartScreen1");
                 std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
             }
 
-            // El spawn se procesa desde el contexto de script, una vez que el mundo
-            // haya creado PlayerLayout y el modelo solicitado esté cargado.
+            // Mantener el spawn dentro del contexto de una fibra RAGE válida.
             PlayerFactory::processPendingSpawn();
         }
+
+        // El bloqueo de historia sigue limitado a los scripts que sabemos que
+        // controlan la entrada al modo campaña/frontend.
+        const char* scriptName = NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
+        const bool isTransitionScript = scriptName &&
+            (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0);
 
         if (isTransitionScript && EngineHooks::isSingleplayerBlocked()) {
             if (s_originalWait) {
@@ -308,7 +320,7 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
-}
+}}
 
 bool EngineHooks::hookScriptThread() {
     std::cout << "[EngineHooks] Interceptando hilo de scripts de RDR1 (bloqueo de modo historia)..." << std::endl;
