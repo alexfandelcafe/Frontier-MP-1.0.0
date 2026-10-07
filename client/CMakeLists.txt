@@ -1,13 +1,35 @@
-add_library(minhook STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/src/buffer.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/src/hook.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/src/trampoline.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/src/hde/hde32.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/src/hde/hde64.c
+set(MINHOOK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook")
+set(MINHOOK_SOURCE_PRESENT
+    EXISTS "${MINHOOK_ROOT}/src/buffer.c"
+    AND EXISTS "${MINHOOK_ROOT}/src/hook.c"
+    AND EXISTS "${MINHOOK_ROOT}/src/trampoline.c"
+    AND EXISTS "${MINHOOK_ROOT}/src/hde/hde64.c"
 )
-target_include_directories(minhook PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/include
-)
+
+if(MINHOOK_SOURCE_PRESENT)
+    add_library(minhook STATIC
+        ${MINHOOK_ROOT}/src/buffer.c
+        ${MINHOOK_ROOT}/src/hook.c
+        ${MINHOOK_ROOT}/src/trampoline.c
+        ${MINHOOK_ROOT}/src/hde/hde32.c
+        ${MINHOOK_ROOT}/src/hde/hde64.c
+    )
+    target_include_directories(minhook PUBLIC
+        ${MINHOOK_ROOT}/include
+    )
+else()
+    include(FetchContent)
+
+    FetchContent_Declare(
+        frontier_minhook
+        GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
+        GIT_TAG 8af6b4acae5a9388fd742b56fa79ece89d96f823
+        GIT_SHALLOW FALSE
+        SOURCE_SUBDIR .
+    )
+
+    FetchContent_MakeAvailable(frontier_minhook)
+endif()
 
 add_library(frontier_core SHARED
     core/src/dllmain.cpp
@@ -25,7 +47,7 @@ target_include_directories(frontier_core PRIVATE
     net/include
     ui/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/minhook/include
+    ${MINHOOK_ROOT}/include
 )
 
 target_link_libraries(frontier_core PRIVATE
@@ -55,7 +77,6 @@ set_target_properties(frontier_launcher PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# Copiar automáticamente la carpeta ui_assets y settings.json junto a la DLL y Launcher
 add_custom_command(TARGET frontier_core POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/ui_assets"
