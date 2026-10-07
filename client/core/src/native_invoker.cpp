@@ -135,6 +135,11 @@ T resolveMangledExport(HMODULE module, const char* token) {
 
 } // namespace
 
+bool NativeInvoker::isReady() {
+    return s_scriptHookApiReady.load(std::memory_order_acquire) &&
+           !s_faulted.load(std::memory_order_acquire);
+}
+
 void NativeInvoker::setScriptHookApi(
     ScriptNativeInitFn nativeInit,
     ScriptNativePush64Fn nativePush64,
