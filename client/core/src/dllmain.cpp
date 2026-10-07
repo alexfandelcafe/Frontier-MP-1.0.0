@@ -8,6 +8,7 @@
 #include "core/pattern_scanner.hpp"
 #include "core/native_invoker.hpp"
 #include "core/engine_hooks.hpp"
+#include "core/script_bridge.hpp"
 #include "net/client_net.hpp"
 #include "ui/cef_manager.hpp"
 #include "ui/d3d11_renderer.hpp"
@@ -98,6 +99,10 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
     Frontier::Core::EngineHooks::initialize();
 
+    if (!Frontier::Core::ScriptBridge::isRegistered()) {
+        std::cout << "[ScriptBridge] ScriptHookRDR no estaba disponible al inicio; el pump de script no fue registrado." << std::endl;
+    }
+
     // 3. Inicializar subsistemas del cliente
     std::cout << "[FrontierClient] Initializing PlayerFactory and Native Invoker..." << std::endl;
     Frontier::Core::PlayerFactory::initialize();
@@ -111,9 +116,17 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 5. Bucle de actualización del cliente
+    uint32_t scriptBridgeRetryTicks = 0;
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
-        Frontier::Core::EngineHooks::processMultiplayerWorldLoad();
+
+        // ScriptHookRDR puede aparecer unos instantes después de nuestra DLL.
+        // Reintentamos registrar el script pump sin ejecutar ninguna native aquí.
+        if (!Frontier::Core::ScriptBridge::isRegistered() &&
+            (++scriptBridgeRetryTicks % 60) == 0) {
+            Frontier::Core::ScriptBridge::registerScript(hModule);
+        }
+
         Frontier::UI::CefManager::get().update();
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
     }
@@ -124,6 +137,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+        Frontier::Core::ScriptBridge::registerScript(hModule);
         HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
             CloseHandle(hThread);
