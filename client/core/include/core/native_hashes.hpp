@@ -10,6 +10,8 @@ constexpr uint32_t GET_SCRIPT_NAME                 = 0x0BC52445;
 // Comandos de transición extraídos del client-main.dll descomprimido de RDRMP.
 // FUN_180053da0 usa 0xB58825F5 con textos como fileSetForMPLoad y
 // fileStartupChecksComplete; FUN_180053f00 usa 0x2DF89C2E con StartScreen1.
+constexpr uint32_t MULTIPLAYER_LOAD_PREPARE        = 0xB0B4296A;
+constexpr uint32_t MULTIPLAYER_LOAD_READY_CHECK    = 0xE5CC6F08;
 constexpr uint32_t FILE_SET_FOR_MP_LOAD            = 0xB58825F5;
 constexpr uint32_t START_SCREEN_1                  = 0x2DF89C2E;
 constexpr uint32_t GET_PLAYER_ACTOR                = 0xE8CFDD53;
