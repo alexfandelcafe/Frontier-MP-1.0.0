@@ -25,6 +25,7 @@ public:
     static void init(uintptr_t getCommandAddress);
     static bool isReady() {
         return !s_faulted.load(std::memory_order_acquire) &&
+               s_layoutConfirmed.load(std::memory_order_acquire) &&
                (s_commandsRegistration != nullptr || s_getCommandFunc != nullptr);
     }
     static scrNativeHandler findNative(uint32_t hash);
@@ -68,6 +69,7 @@ private:
     static inline uint64_t s_returnData[4]{};
     static inline scrNativeCallContext s_context{};
     static inline std::atomic<bool> s_faulted{false};
+    static inline std::atomic<bool> s_layoutConfirmed{false};
 };
 
 } // namespace Frontier::Core
