@@ -17,7 +17,6 @@ namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
-using ScriptUnregisterFn = void (*)(HMODULE);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
