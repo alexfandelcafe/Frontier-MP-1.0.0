@@ -320,7 +320,7 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
-}}
+}
 
 bool EngineHooks::hookScriptThread() {
     std::cout << "[EngineHooks] Interceptando hilo de scripts de RDR1 (bloqueo de modo historia)..." << std::endl;
