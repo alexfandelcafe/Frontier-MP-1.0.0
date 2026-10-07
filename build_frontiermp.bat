@@ -7,6 +7,10 @@ cd /d "%~dp0"
 
 if not exist "logs" mkdir "logs"
 
+rem Use a clean out-of-source build directory so a copied repository never reuses
+rem a CMakeCache generated in another absolute path.
+set "BUILD_DIR=build_release"
+
 for /f "tokens=1-3 delims=/ " %%a in ('echo %date%') do (
     set "D1=%%a"
     set "D2=%%b"
@@ -28,11 +32,27 @@ echo Project: %cd% >> "!LOG!"
 echo ========================================================== >> "!LOG!"
 echo.
 
-echo [1/2] Configuring CMake...
-echo [1/2] Configuring CMake...
+echo [1/2] Preparing clean CMake build directory...
+echo [1/2] Preparing clean CMake build directory... >> "!LOG!"
 echo.
 
-cmake -S . -B build -A x64 >> "!LOG!" 2>&1
+if exist "!BUILD_DIR!\CMakeCache.txt" (
+    echo [INFO] Existing CMake cache found in !BUILD_DIR! - removing it... 
+    echo [INFO] Existing CMake cache found in !BUILD_DIR! - removing it... >> "!LOG!"
+    rmdir /s /q "!BUILD_DIR!" >> "!LOG!" 2>&1
+)
+
+if exist "!BUILD_DIR!" (
+    echo [INFO] Reusing directory !BUILD_DIR! after cache cleanup.
+) else (
+    mkdir "!BUILD_DIR!" >> "!LOG!" 2>&1
+)
+
+echo [1/2] Configuring CMake...
+echo [1/2] Configuring CMake... >> "!LOG!"
+
+echo cmake -S . -B !BUILD_DIR! -A x64 >> "!LOG!"
+cmake -S . -B "!BUILD_DIR!" -A x64 >> "!LOG!" 2>&1
 set "CFG_EXIT=!ERRORLEVEL!"
 
 if not "!CFG_EXIT!"=="0" (
@@ -56,7 +76,8 @@ echo [2/2] Building Release...
 echo [2/2] Building Release...
 echo.
 
-cmake --build build --config Release --parallel >> "!LOG!" 2>&1
+echo cmake --build !BUILD_DIR! --config Release --parallel >> "!LOG!"
+cmake --build "!BUILD_DIR!" --config Release --parallel >> "!LOG!" 2>&1
 set "BUILD_EXIT=!ERRORLEVEL!"
 
 echo. >> "!LOG!"
