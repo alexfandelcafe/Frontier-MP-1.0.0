@@ -260,6 +260,16 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
+    // Fallback: en esta build no está disponible la API de ScriptHookRDR
+    // (scriptRegister/scriptWait), así que usamos directamente el contexto
+    // real de rage::scrThread::Wait para ejecutar la transición multiplayer.
+    //
+    // Esto ocurre dentro del scheduler de scripts de RAGE, que es precisamente
+    // el contexto necesario para las natives de carga de mundo.
+    if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+        EngineHooks::processMultiplayerWorldLoad();
+    }
+
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
