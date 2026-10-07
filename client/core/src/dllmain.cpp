@@ -112,8 +112,9 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // ScriptHookRDR was preloaded by the launcher. Frontier registered its
-    // ScriptMain during DLL_PROCESS_ATTACH, matching the ScriptHook SDK lifecycle.
+    // ScriptHookRDR may be injected just after Frontier. initialize() resolves
+    // its API if available; the worker loop below keeps retrying until the
+    // ScriptMain callback actually starts.
     Frontier::Core::ScriptBridge::initialize(hModule);
     appendBootLog(modDir,
         "[ScriptBridge] Early registration requested from DLL_PROCESS_ATTACH.");
@@ -145,23 +146,17 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 5. Bucle de actualización del cliente
-    bool worldLoadFallbackLogged = false;
+    uint32_t scriptRegistrationTicks = 0;
 
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // The script is registered exactly once from DLL_PROCESS_ATTACH.
-        // This persistent thread does not retry registration and never invokes
-        // natives outside ScriptHookRDR's script scheduler.
-        if (!worldLoadFallbackLogged &&
-            !Frontier::Core::ScriptBridge::isRegistered() &&
-            Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
-            std::cout
-                << "[FrontierClient] ScriptMain de ScriptHookRDR no inició; "
-                   "la transición multiplayer usará el contexto rage::scrThread::Wait "
-                   "cuando el servidor solicite cargar el mundo."
-                << std::endl;
-            worldLoadFallbackLogged = true;
+        // The launcher keeps Frontier resident before ScriptHookRDR starts its
+        // startup scan. Retry from a normal worker thread until our callback
+        // really starts. No natives are executed here.
+        if (!Frontier::Core::ScriptBridge::isRegistered() &&
+            (++scriptRegistrationTicks % 15) == 0) {
+            Frontier::Core::ScriptBridge::tryRegister(hModule);
         }
 
         Frontier::UI::CefManager::get().update();
