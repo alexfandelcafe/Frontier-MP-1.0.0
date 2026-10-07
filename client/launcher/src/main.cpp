@@ -5,6 +5,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include "dependency_bootstrap.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -210,6 +211,17 @@ int main(int argc, char* argv[]) {
     fs::path gameDir = rdrExePath.parent_path();
     std::cout << "[Launcher] Game Directory: " << gameDir.string() << std::endl;
     std::cout << "[Launcher] Game Executable: " << rdrExePath.string() << std::endl;
+
+    // Bootstrap de dependencias externas. ScriptHookRDR es un binario de runtime,
+    // por lo que no se embebe en el repositorio ni se exige una instalación manual.
+    const auto scriptHook = Frontier::Launcher::ensureScriptHookRDR(gameDir, launcherDir);
+    if (!scriptHook.ready) {
+        std::cerr << "[Launcher] [ERROR] ScriptHookRDR 1.5.2 no está disponible. "
+                  << scriptHook.message << std::endl;
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    }
 
     // Localizar frontier_core.dll en la carpeta del launcher
     fs::path dllPath = launcherDir / "frontier_core.dll";
