@@ -250,45 +250,49 @@ void resolveScriptHook(HMODULE frontierModule) {
 
 } // namespace
 
-void ScriptBridge::registerScript(HMODULE module) {
+void ScriptBridge::registerScriptEarly(HMODULE module) {
+    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule || !module) {
+        return;
+    }
+
+    const auto registerFn = getExportByExactName<ScriptRegisterFn>(
+        hookModule,
+        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!registerFn) {
+        return;
+    }
+
+    if (s_registered.load(std::memory_order_acquire) ||
+        s_registrationRequested.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    // ScriptHookRDR's SDK expects script registration from the mod's
+    // DLL_PROCESS_ATTACH. The launcher therefore loads ScriptHookRDR first,
+    // then Frontier calls this before its worker thread starts.
+    registerFn(module, &ScriptBridge::scriptMain);
+}
+
+void ScriptBridge::initialize(HMODULE module) {
     resolveScriptHook(module);
 
-    if (!s_scriptRegister || !s_scriptWait) {
+    if (!s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
                 true,
                 std::memory_order_acq_rel)) {
-            std::cout
-                << "[ScriptBridge] ScriptHookRDR cargado pero no se pudieron resolver "
-                   "scriptRegister/scriptWait."
+            std::cerr
+                << "[ScriptBridge] ScriptHookRDR está cargado, pero scriptWait "
+                   "no pudo resolverse."
                 << std::endl;
         }
         return;
     }
 
-    if (s_registered.load(std::memory_order_acquire) ||
-        s_registrationRequested.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    s_registrationRequested.store(true, std::memory_order_release);
-
-    // This call deliberately happens immediately after ScriptHookRDR is loaded
-    // and its export table is resolved. Waiting for "[INIT] Finished hooking
-    // functions" is too late: ScriptHook decides during that startup phase
-    // whether any script thread stacks need to be created.
-    s_scriptRegister(
-        module,
-        &ScriptBridge::scriptMain);
-
-    // Diagnostics deliberately happen after registration so they cannot delay
-    // ScriptHookRDR's startup scan.
-    if (HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll")) {
-        dumpRelevantExports(hookModule);
-    }
-
     std::cout
-        << "[ScriptBridge] Registro de FrontierMP enviado inmediatamente mediante "
-           "scriptRegister; esperando al scheduler de ScriptHookRDR."
+        << "[ScriptBridge] Registro de FrontierMP ya fue enviado desde "
+           "DLL_PROCESS_ATTACH; esperando al scheduler de ScriptHookRDR."
         << std::endl;
 }
 
