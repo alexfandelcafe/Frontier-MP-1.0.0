@@ -7,28 +7,21 @@
 
 namespace Frontier::Core {
 
-struct scrNativeCallContext {
-    void* m_return;
-    uint32_t m_argCount;
-    void* m_args;
-    uint32_t m_dataCount;
-
-    uint8_t m_vectorSpace[192];
-};
-
-using scrNativeHandler = void (*)(scrNativeCallContext*);
-using scrGetCommandHandler = scrNativeHandler (*)(uint32_t hash);
+using ScriptNativeInitFn = void (*)(uint64_t hash);
+using ScriptNativePush64Fn = void (*)(uint64_t value);
+using ScriptNativeCallFn = uint64_t* (*)();
+using ScriptGetCommandFn = void* (*)(uint64_t hash);
 
 class NativeInvoker {
 public:
     static bool initialize();
     static void init(uintptr_t getCommandAddress);
-    static bool isReady() {
-        return !s_faulted.load(std::memory_order_acquire) &&
-               s_layoutConfirmed.load(std::memory_order_acquire) &&
-               (s_commandsRegistration != nullptr || s_getCommandFunc != nullptr);
-    }
-    static scrNativeHandler findNative(uint32_t hash);
+    static bool isReady();
+    static void setScriptHookApi(
+        ScriptNativeInitFn nativeInit,
+        ScriptNativePush64Fn nativePush64,
+        ScriptNativeCallFn nativeCall,
+        ScriptGetCommandFn getCommandFromHash);
 
     static void beginCall();
 
@@ -38,6 +31,7 @@ public:
         if (s_argCount >= 32) {
             return;
         }
+
         uint64_t val = 0;
         std::memcpy(&val, &value, sizeof(T));
         s_args[s_argCount++] = val;
@@ -47,7 +41,9 @@ public:
 
     template <typename T>
     static T getReturn() {
-        return *reinterpret_cast<T*>(&s_returnData);
+        T value{};
+        std::memcpy(&value, s_returnData, sizeof(T));
+        return value;
     }
 
     template <typename Ret, typename... Args>
@@ -55,21 +51,24 @@ public:
         beginCall();
         (pushArg(args), ...);
         endCall(hash);
+
         if constexpr (!std::is_void_v<Ret>) {
             return getReturn<Ret>();
         }
     }
 
 private:
-    static inline scrGetCommandHandler s_getCommandFunc{nullptr};
-    static inline uintptr_t s_regPtrAddress{0};
-    static inline uintptr_t* s_commandsRegistration{nullptr};
+    static inline ScriptNativeInitFn s_nativeInit{nullptr};
+    static inline ScriptNativePush64Fn s_nativePush64{nullptr};
+    static inline ScriptNativeCallFn s_nativeCall{nullptr};
+    static inline ScriptGetCommandFn s_getCommandFromHash{nullptr};
+
     static inline uint64_t s_args[32]{};
     static inline uint32_t s_argCount{0};
     static inline uint64_t s_returnData[4]{};
-    static inline scrNativeCallContext s_context{};
+
     static inline std::atomic<bool> s_faulted{false};
-    static inline std::atomic<bool> s_layoutConfirmed{false};
+    static inline std::atomic<bool> s_scriptHookApiReady{false};
 };
 
 } // namespace Frontier::Core
