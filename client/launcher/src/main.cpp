@@ -262,12 +262,44 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId << "). Injecting FrontierMP Core..." << std::endl;
+    std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId
+              << "). Loading client-side ScriptHookRDR first..." << std::endl;
+
+    // IMPORTANT: ScriptHookRDR must be loaded before frontier_core.dll so
+    // Frontier can call scriptRegister from DLL_PROCESS_ATTACH, matching the
+    // ScriptHook SDK lifecycle. Both modules stay in the client directory;
+    // the game installation is never modified.
+    if (!injectDll(pi.hProcess, scriptHook.scriptHookPath.string())) {
+        std::cerr
+            << "[Launcher] [ERROR] Could not load ScriptHookRDR from the Frontier client."
+            << std::endl;
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    }
+
+    std::cout << "[Launcher] [SUCCESS] ScriptHookRDR loaded from client directory."
+              << std::endl;
+    std::cout << "[Launcher] Injecting FrontierMP Core after ScriptHookRDR..."
+              << std::endl;
 
     if (injectDll(pi.hProcess, dllPath.string())) {
-        std::cout << "[Launcher] [SUCCESS] FrontierMP Core injected successfully!" << std::endl;
+        std::cout << "[Launcher] [SUCCESS] FrontierMP Core injected successfully!"
+                  << std::endl;
     } else {
-        std::cerr << "[Launcher] [WARNING] Injection failed. Game will resume vanilla." << std::endl;
+        std::cerr
+            << "[Launcher] [ERROR] FrontierMP Core injection failed. "
+               "The game will not be resumed."
+            << std::endl;
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
     }
 
     // Reanudar la ejecución del juego
