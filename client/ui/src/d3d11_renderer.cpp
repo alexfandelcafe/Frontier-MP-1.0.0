@@ -945,12 +945,13 @@ void D3D11Renderer::triggerConnect() {
     m_showMainMenu = false;
     m_showChat = true;
 
-    // Desbloquear estado de campaña y conectar al servidor multijugador
-    Core::EngineHooks::setSingleplayerBlocked(false);
+    // Conectar al servidor y solicitar la transición real del frontend de RDR1
+    // al estado de mundo multijugador. El actor no se crea aquí: PlayerLayout
+    // todavía no existe mientras RDR permanece en el frontend.
+    Core::EngineHooks::requestMultiplayerWorldLoad();
     Net::ClientNetwork::get().connect(m_serverIp, port, m_playerName);
-
-    // Spawnear al jugador en el mundo sandbox limpio
-    Core::PlayerFactory::spawnLocalPlayer(Vector3(-180.0f, 60.0f, 1950.0f), 0.0f, 837);
+    Core::PlayerFactory::requestLocalPlayerSpawn(
+        Vector3(-180.0f, 60.0f, 1950.0f), 0.0f, 837);
 }
 
 bool D3D11Renderer::handleInput(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {

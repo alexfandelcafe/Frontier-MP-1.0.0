@@ -1,6 +1,7 @@
 #include "core/engine_hooks.hpp"
 #include "core/native_invoker.hpp"
 #include "core/native_hashes.hpp"
+#include "core/player_factory.hpp"
 #include "core/pattern_scanner.hpp"
 #include "ui/d3d11_renderer.hpp"
 #include <MinHook.h>
@@ -95,6 +96,9 @@ void EngineHooks::shutdown() {
         s_stablePresentFrames.store(0, std::memory_order_release);
         s_swapChainCreateCount.store(0, std::memory_order_release);
         s_overlayEligible.store(false, std::memory_order_release);
+        s_multiplayerWorldRequested.store(false, std::memory_order_release);
+        s_multiplayerPreparationStarted.store(false, std::memory_order_release);
+        s_multiplayerTransitionStarted.store(false, std::memory_order_release);
 
         if (s_pCommandQueue) {
             s_pCommandQueue->Release();
@@ -119,6 +123,17 @@ void EngineHooks::setSingleplayerBlocked(bool blocked) {
     if (!blocked && !s_worldCleaned) {
         setupSandboxWorld();
     }
+}
+
+void EngineHooks::requestMultiplayerWorldLoad() {
+    s_blockSingleplayer = false;
+    if (!s_worldCleaned) {
+        setupSandboxWorld();
+    }
+
+    s_multiplayerWorldRequested.store(true, std::memory_order_release);
+    std::cout << "[EngineHooks] Solicitud de transición FRONTEND -> MUNDO MULTIJUGADOR registrada." << std::endl;
+    std::cout << "[EngineHooks] Esperando al hilo de scripts de RDR para iniciar la carga online..." << std::endl;
 }
 
 bool EngineHooks::hookGraphics() {
@@ -244,14 +259,46 @@ bool EngineHooks::hookGraphics() {
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
     if (NativeInvoker::isReady()) {
         const char* scriptName = NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
-        if (scriptName) {
-            if (EngineHooks::isSingleplayerBlocked() && 
-               (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0)) {
-                if (s_originalWait) {
-                    s_originalWait(scrThread, 100);
-                }
-                return;
+        const bool isTransitionScript = scriptName &&
+            (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0);
+
+        if (isTransitionScript && s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+            // Reproducir la primera parte de LoadOnline del cliente original:
+            // FUN_1800541b0() prepara el estado y FUN_180054060() indica cuándo
+            // el juego ya permite continuar con fileSetForMPLoad.
+            if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
+                NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
+                std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
             }
+
+            if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+                const bool stillPreparing =
+                    NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+                if (stillPreparing) {
+                    if (s_originalWait) {
+                        s_originalWait(scrThread, waitTime);
+                    }
+                    return;
+                }
+
+                s_multiplayerTransitionStarted.store(true, std::memory_order_release);
+                std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
+                NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
+                NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
+                NativeInvoker::invoke<void>(Natives::START_SCREEN_1, "StartScreen1");
+                std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
+            }
+
+            // El spawn se procesa desde el contexto de script, una vez que el mundo
+            // haya creado PlayerLayout y el modelo solicitado esté cargado.
+            PlayerFactory::processPendingSpawn();
+        }
+
+        if (isTransitionScript && EngineHooks::isSingleplayerBlocked()) {
+            if (s_originalWait) {
+                s_originalWait(scrThread, 100);
+            }
+            return;
         }
     }
 

@@ -4,8 +4,20 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <atomic>
+
 
 namespace Frontier::Core {
+
+namespace {
+std::atomic<bool> s_spawnPending{false};
+std::atomic<bool> s_modelRequested{false};
+Vector3 s_pendingPosition{};
+float s_pendingHeading{0.0f};
+ModelHash s_pendingModel{0};
+uintptr_t s_localActor{0};
+uint32_t s_spawnPollCounter{0};
+}
 
 bool PlayerFactory::initialize() {
     std::cout << "[PlayerFactory] Initialized actor lifecycle manager." << std::endl;
@@ -29,6 +41,64 @@ bool PlayerFactory::requestAndStreamModel(ModelHash modelHash, uint32_t timeoutM
         }
     }
     return true;
+}
+
+void PlayerFactory::requestLocalPlayerSpawn(const Vector3& position, float heading, ModelHash modelHash) {
+    s_pendingPosition = position;
+    s_pendingHeading = heading;
+    s_pendingModel = modelHash;
+    s_modelRequested.store(false, std::memory_order_release);
+    s_spawnPending.store(true, std::memory_order_release);
+    s_spawnPollCounter = 0;
+    std::cout << "[PlayerFactory] Spawn local solicitado; esperando transición de mundo y 'PlayerLayout'." << std::endl;
+}
+
+void PlayerFactory::processPendingSpawn() {
+    if (!s_spawnPending.load(std::memory_order_acquire)) return;
+    if (!NativeInvoker::isReady()) return;
+
+    ++s_spawnPollCounter;
+    uintptr_t layout = getPlayerLayout();
+    if (!layout) {
+        if ((s_spawnPollCounter % 120) == 0) {
+            std::cout << "[PlayerFactory] Esperando 'PlayerLayout'..." << std::endl;
+        }
+        return;
+    }
+
+    if (!s_modelRequested.load(std::memory_order_acquire)) {
+        NativeInvoker::invoke<void>(Natives::STREAMING_REQUEST_ACTOR, s_pendingModel);
+        s_modelRequested.store(true, std::memory_order_release);
+        std::cout << "[PlayerFactory] PlayerLayout listo; solicitando modelo 0x"
+                  << std::hex << s_pendingModel << std::dec << "." << std::endl;
+    }
+
+    if (!NativeInvoker::invoke<bool>(Natives::STREAMING_IS_ACTOR_LOADED, s_pendingModel)) {
+        return;
+    }
+
+    std::cout << "[PlayerFactory] Mundo gameplay listo; creando jugador local..." << std::endl;
+    uintptr_t actor = NativeInvoker::invoke<uintptr_t>(
+        Natives::CREATE_PLAYER_ACTOR_IN_LAYOUT,
+        layout,
+        s_pendingModel,
+        s_pendingPosition.x,
+        s_pendingPosition.y,
+        s_pendingPosition.z,
+        s_pendingHeading
+    );
+
+    if (!actor) {
+        std::cerr << "[PlayerFactory] CREATE_PLAYER_ACTOR_IN_LAYOUT no devolvió actor." << std::endl;
+        return;
+    }
+
+    s_localActor = actor;
+    s_spawnPending.store(false, std::memory_order_release);
+    s_modelRequested.store(false, std::memory_order_release);
+    enablePlayerControl(true);
+    std::cout << "[PlayerFactory] Local player actor spawned successfully (Ptr: 0x"
+              << std::hex << actor << std::dec << ")." << std::endl;
 }
 
 uintptr_t PlayerFactory::spawnLocalPlayer(const Vector3& position, float heading, ModelHash modelHash) {
