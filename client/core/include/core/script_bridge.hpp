@@ -27,6 +27,7 @@ private:
     static void runFrame();
 
     static bool installRunInterceptor(HMODULE hookModule);
+    static uint64_t hookedScriptHookRun(uintptr_t scriptThread, uintptr_t param2);
     static void pumpRegisteredScript(uintptr_t hookModuleBase);
 
     static inline std::atomic<bool> s_registered{false};
