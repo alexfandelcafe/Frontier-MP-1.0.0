@@ -284,6 +284,9 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
 
 
 void EngineHooks::processMultiplayerWorldLoad() {
+    static std::mutex s_worldLoadMutex;
+    std::lock_guard<std::mutex> worldLoadLock(s_worldLoadMutex);
+
     if (!s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
         return;
     }
