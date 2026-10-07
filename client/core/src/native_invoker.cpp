@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cstring>
 
 namespace Frontier::Core {
 
@@ -137,7 +138,6 @@ T resolveMangledExport(HMODULE module, const char* token) {
 void NativeInvoker::setScriptHookApi(
     ScriptNativeInitFn nativeInit,
     ScriptNativePush64Fn nativePush64,
-    ScriptNativeCallFn nativeCall,
     ScriptNativeCallFn nativeCall)
 {
     s_nativeInit = nativeInit;
@@ -245,8 +245,6 @@ void NativeInvoker::endCall(uint32_t hash) {
          << " return0=" << hexValue(s_returnData[0]);
     appendNativeLog(line.str());
     std::cout << line.str() << std::endl;
-}
-
 }
 
 } // namespace Frontier::Core
