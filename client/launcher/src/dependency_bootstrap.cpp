@@ -3,8 +3,6 @@
 #include <windows.h>
 #include <urlmon.h>
 
-#include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -202,15 +200,11 @@ bool copyIfMissing(const fs::path& source, const fs::path& destination) {
 
 void writeDependencyMarker(
     const fs::path& directory,
-    const fs::path& scriptHook,
-    const fs::path& loader)
+    const fs::path& scriptHook)
 {
     std::ostringstream content;
     content << "ScriptHookRDR=" << kScriptHookVersion << "\n";
     content << "ScriptHookRDR.dll=" << scriptHook.string() << "\n";
-    if (!loader.empty()) {
-        content << "dinput8.dll=" << loader.string() << "\n";
-    }
     writeTextFile(directory / "scripthookrdr.runtime.txt", content.str());
 }
 
@@ -224,15 +218,9 @@ DependencyBootstrapResult ensureScriptHookRDR(
 
     std::error_code ec;
     fs::path gameScriptHook = gameDirectory / "ScriptHookRDR.dll";
-    fs::path gameLoader = gameDirectory / "dinput8.dll";
-
     if (fileLooksValid(gameScriptHook)) {
         result.ready = true;
         result.scriptHookPath = gameScriptHook;
-        if (fileLooksValid(gameLoader)) {
-            result.loaderPath = gameLoader;
-        }
-
         std::cout << "[Launcher] ScriptHookRDR.dll ya está instalado en: "
                   << gameScriptHook.string() << std::endl;
         return result;
@@ -243,8 +231,6 @@ DependencyBootstrapResult ensureScriptHookRDR(
     const fs::path archivePath = cacheDirectory / kScriptHookArchiveName;
     const fs::path extractDirectory = cacheDirectory / "extracted";
     const fs::path cachedScriptHook = cacheDirectory / "ScriptHookRDR.dll";
-    const fs::path cachedLoader = cacheDirectory / "dinput8.dll";
-
     fs::create_directories(cacheDirectory, ec);
 
     if (!fileLooksValid(cachedScriptHook)) {
@@ -264,9 +250,6 @@ DependencyBootstrapResult ensureScriptHookRDR(
 
         const fs::path extractedScriptHook =
             findFileRecursive(extractDirectory, "ScriptHookRDR.dll");
-        const fs::path extractedLoader =
-            findFileRecursive(extractDirectory, "dinput8.dll");
-
         if (extractedScriptHook.empty() ||
             !copyIfMissing(extractedScriptHook, cachedScriptHook)) {
             result.message =
@@ -274,10 +257,6 @@ DependencyBootstrapResult ensureScriptHookRDR(
             return result;
         }
 
-        if (!extractedLoader.empty() &&
-            !fileLooksValid(cachedLoader, 16 * 1024)) {
-            copyIfMissing(extractedLoader, cachedLoader);
-        }
     }
 
     if (!fileLooksValid(cachedScriptHook)) {
@@ -289,17 +268,6 @@ DependencyBootstrapResult ensureScriptHookRDR(
         result.installedToGame = true;
     }
 
-    // dinput8.dll is optional for Frontier's explicit LoadLibraryEx path.
-    // Install it only when the game does not already have one, so we never
-    // overwrite another ASI loader or user's existing setup.
-    if (!fileLooksValid(gameLoader) && fileLooksValid(cachedLoader, 16 * 1024)) {
-        if (copyIfMissing(cachedLoader, gameLoader)) {
-            result.loaderPath = gameLoader;
-        }
-    } else if (fileLooksValid(gameLoader)) {
-        result.loaderPath = gameLoader;
-    }
-
     result.scriptHookPath = fileLooksValid(gameScriptHook)
         ? gameScriptHook
         : cachedScriptHook;
@@ -308,8 +276,7 @@ DependencyBootstrapResult ensureScriptHookRDR(
     if (result.ready) {
         writeDependencyMarker(
             cacheDirectory,
-            result.scriptHookPath,
-            result.loaderPath);
+            result.scriptHookPath);
         std::cout << "[Launcher] ScriptHookRDR " << kScriptHookVersion
                   << " listo en: " << result.scriptHookPath.string() << std::endl;
         if (result.installedToGame) {
