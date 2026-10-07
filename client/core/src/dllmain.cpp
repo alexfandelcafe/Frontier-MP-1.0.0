@@ -144,17 +144,13 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 5. Bucle de actualización del cliente
-    uint32_t scriptRegistrationTicks = 0;
-
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Retry until ScriptHookRDR's Run scheduler is ready and the callback
-        // actually starts. tryRegister() becomes a no-op after submission.
-        if (!Frontier::Core::ScriptBridge::isRegistered() &&
-            (++scriptRegistrationTicks % 15) == 0) {
-            Frontier::Core::ScriptBridge::tryRegister(hModule);
-        }
+        // The bridge owns registration plus the ScriptHookRDR 1.5.2 scheduler
+        // fallback. It is serviced every client tick so the fallback can
+        // enter/yield the registered script fiber at roughly frame cadence.
+        Frontier::Core::ScriptBridge::update(hModule);
 
         Frontier::UI::CefManager::get().update();
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
@@ -166,7 +162,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         // ScriptHookRDR is loaded first by the launcher while the game is
-        // suspended. Register Frontier immediately during module attach.
+        // suspended. Keep DLL attach free of ScriptHook calls; registration is handled by the client worker after ScriptHook initialization.
         Frontier::Core::ScriptBridge::registerScriptEarly(hModule);
 
         DisableThreadLibraryCalls(hModule);
