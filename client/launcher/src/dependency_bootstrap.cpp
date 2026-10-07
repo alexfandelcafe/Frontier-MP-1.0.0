@@ -60,6 +60,33 @@ bool fileLooksValid(const fs::path& path, uintmax_t minimumBytes = 4096) {
     return !ec && size >= minimumBytes;
 }
 
+bool fileLooksLikePeImage(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    IMAGE_DOS_HEADER dos{};
+    file.read(
+        reinterpret_cast<char*>(&dos),
+        sizeof(dos));
+
+    if (!file || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew < static_cast<LONG>(sizeof(dos))) {
+        return false;
+    }
+
+    file.seekg(dos.e_lfanew, std::ios::beg);
+
+    DWORD signature = 0;
+    file.read(
+        reinterpret_cast<char*>(&signature),
+        sizeof(signature));
+
+    return file &&
+           signature == IMAGE_NT_SIGNATURE;
+}
+
 std::wstring widenAscii(const std::string& value) {
     return std::wstring(value.begin(), value.end());
 }
@@ -258,7 +285,8 @@ bool downloadFile(const char* url, const fs::path& destination) {
     WinHttpCloseHandle(connection);
     WinHttpCloseHandle(session);
 
-    if (!fileLooksValid(partialPath, 256 * 1024)) {
+    if (!fileLooksValid(partialPath, 256 * 1024) ||
+        !fileLooksLikePeImage(partialPath)) {
         fs::remove(partialPath, ec);
         std::cerr << "[Launcher] La descarga terminó pero el archivo no es válido."
                   << std::endl;
@@ -431,9 +459,10 @@ DependencyBootstrapResult ensureScriptHookRDR(
         result.downloaded = true;
     }
 
-    if (!fileLooksValid(cachedScriptHook)) {
+    if (!fileLooksValid(cachedScriptHook) ||
+        !fileLooksLikePeImage(cachedScriptHook)) {
         result.message =
-            "ScriptHookRDR.dll no quedó disponible en la caché.";
+            "ScriptHookRDR.dll no quedó disponible en la caché o no es un PE válido.";
         return result;
     }
     if (!copyIfMissing(cachedScriptHook, clientScriptHook)) {
@@ -444,7 +473,9 @@ DependencyBootstrapResult ensureScriptHookRDR(
 
     result.preparedInClient = true;
     result.scriptHookPath = clientScriptHook;
-    result.ready = fileLooksValid(clientScriptHook);
+    result.ready =
+        fileLooksValid(clientScriptHook) &&
+        fileLooksLikePeImage(clientScriptHook);
 
     if (result.ready) {
         writeDependencyMarker(cacheDirectory, result.scriptHookPath);
