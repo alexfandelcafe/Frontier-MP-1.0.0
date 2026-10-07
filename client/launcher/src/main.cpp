@@ -118,6 +118,8 @@ std::string selectGameExecutableDialog() {
 
 bool injectDll(HANDLE hProcess, const std::string& dllPath) {
 #ifdef _WIN32
+    std::cout << "[Launcher] Remote-loading: " << dllPath << std::endl;
+
     void* loc = VirtualAllocEx(hProcess, nullptr, dllPath.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!loc) {
         std::cerr << "[Launcher] Failed to allocate memory in remote process. Error: " << GetLastError() << std::endl;
@@ -131,7 +133,23 @@ bool injectDll(HANDLE hProcess, const std::string& dllPath) {
     }
 
     HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-    LPTHREAD_START_ROUTINE loadLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(hKernel32, "LoadLibraryA"));
+    if (!hKernel32) {
+        std::cerr << "[Launcher] kernel32.dll no está disponible en el proceso del launcher."
+                  << std::endl;
+        VirtualFreeEx(hProcess, loc, 0, MEM_RELEASE);
+        return false;
+    }
+
+    LPTHREAD_START_ROUTINE loadLibAddr =
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(
+            GetProcAddress(hKernel32, "LoadLibraryA"));
+
+    if (!loadLibAddr) {
+        std::cerr << "[Launcher] LoadLibraryA no pudo resolverse. Error="
+                  << GetLastError() << std::endl;
+        VirtualFreeEx(hProcess, loc, 0, MEM_RELEASE);
+        return false;
+    }
 
     HANDLE hThread = CreateRemoteThread(
         hProcess,
@@ -149,17 +167,41 @@ bool injectDll(HANDLE hProcess, const std::string& dllPath) {
         return false;
     }
 
-    WaitForSingleObject(hThread, INFINITE);
+    const DWORD waitResult = WaitForSingleObject(hThread, 30000);
+    if (waitResult != WAIT_OBJECT_0) {
+        std::cerr << "[Launcher] Remote LoadLibrary no terminó correctamente. waitResult="
+                  << waitResult << " error=" << GetLastError() << std::endl;
+        CloseHandle(hThread);
+        VirtualFreeEx(hProcess, loc, 0, MEM_RELEASE);
+        return false;
+    }
 
     DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
+    if (!GetExitCodeThread(hThread, &exitCode)) {
+        std::cerr << "[Launcher] No se pudo obtener el resultado de LoadLibraryA. Error="
+                  << GetLastError() << std::endl;
+        CloseHandle(hThread);
+        VirtualFreeEx(hProcess, loc, 0, MEM_RELEASE);
+        return false;
+    }
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, loc, 0, MEM_RELEASE);
 
     if (exitCode == 0) {
-        std::cerr << "[Launcher] LoadLibraryA returned NULL in remote process. Verify DLL dependencies!" << std::endl;
+        std::cerr
+            << "[Launcher] LoadLibraryA returned NULL in remote process for: "
+            << dllPath
+            << ". The module did not load or DllMain returned FALSE."
+            << std::endl;
         return false;
     }
+
+    std::cout
+        << "[Launcher] Remote LoadLibrary succeeded: "
+        << dllPath
+        << " | remote module=0x"
+        << std::hex << static_cast<uintptr_t>(exitCode)
+        << std::dec << std::endl;
 
     return true;
 #else
