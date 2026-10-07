@@ -91,6 +91,7 @@ La implementación final actual:
 El launcher aborta antes de CreateProcess si ScriptHookRDR no queda disponible.
 La descarga usa WinHTTP y la dependencia queda exclusivamente en el directorio del cliente.
 El directorio del juego no se modifica ni se copia allí ScriptHookRDR.dll.
+El CMake del cliente copia el ScriptHookRDR.dll versionado en la raíz del repositorio a build/client/Release durante el POST_BUILD del launcher.
 
 ## CMake actual
 client/CMakeLists.txt ahora agrega:
@@ -144,6 +145,11 @@ No cambiar estos hashes sin evidencia adicional. Una búsqueda histórica extern
 No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el launcher en la PC del usuario. La validación final requiere que el usuario configure/compile y ejecute el launcher en Windows.
 
 ## Últimos commits de contexto
+- 367096159db4eec4a00fc9ceccc3ddcaac4097ac — Remove obsolete ZIP extraction path from launcher bootstrap
+- 8c34200df5f8b059b52e279aa84ecbc5ceeedaee — Validate existing client ScriptHookRDR image
+- b2eedb7807dfbb320f473c234822cb0366e38d26 — Validate downloaded ScriptHookRDR as a PE image
+- b7ca0d69923d273babc33893d8e9ee9ce762e798 — Use GitHub Raw as ScriptHookRDR download source
+- 7b6230e2d12d9946f30407210f13fcf1317463de — Package ScriptHookRDR into client Release output
 - ff4c543103a98697548146946f004ffe1be7d170 — Fix null character literal in PowerShell quoting
 - 66b09e9277f7f8632709ca692e239ccff3b1a7eb — Fix malformed character literal in PowerShell quoting
 - ef275bc4acd87746a73f400a7894d0e280f8f7ee — Fix client ScriptHook bridge formatting
