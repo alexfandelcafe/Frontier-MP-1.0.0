@@ -116,8 +116,17 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 5. Bucle de actualización del cliente
+    uint32_t scriptBridgeRetryTicks = 0;
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
+
+        // ScriptHookRDR puede aparecer unos instantes después de nuestra DLL.
+        // Reintentamos registrar el script pump sin ejecutar ninguna native aquí.
+        if (!Frontier::Core::ScriptBridge::isRegistered() &&
+            (++scriptBridgeRetryTicks % 60) == 0) {
+            Frontier::Core::ScriptBridge::registerScript(hModule);
+        }
+
         Frontier::UI::CefManager::get().update();
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
     }
