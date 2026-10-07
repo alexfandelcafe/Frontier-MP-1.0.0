@@ -302,7 +302,17 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChain(
     DXGI_SWAP_CHAIN_DESC* pDesc,
     IDXGISwapChain** ppSwapChain)
 {
-    if (pDevice) {
+    if (pDesc && pDesc->OutputWindow) {
+        s_gameHwnd = pDesc->OutputWindow;
+    }
+
+    // Hook completamente pasivo durante CreateSwapChain.
+    // No tocamos COM/command queues hasta que DXGI haya creado la swap chain.
+    HRESULT hr = s_originalCreateSwapChain
+        ? s_originalCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain)
+        : E_FAIL;
+
+    if (SUCCEEDED(hr) && pDevice) {
         ID3D12CommandQueue* newQueue = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(
                 __uuidof(ID3D12CommandQueue),
@@ -314,17 +324,10 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChain(
             s_pCommandQueue = newQueue;
         }
     }
-    if (pDesc && pDesc->OutputWindow) {
-        s_gameHwnd = pDesc->OutputWindow;
-    }
 
-    // Hook pasivo durante la creación de la swap chain. El renderer se gestiona desde Present().
-    std::cout << "[EngineHooks] CreateSwapChain detectado. CommandQueue: 0x" 
-              << std::hex << (uintptr_t)s_pCommandQueue << std::dec << std::endl;
-
-    return s_originalCreateSwapChain ? 
-        s_originalCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain) : 
-        E_FAIL;
+    std::cout << "[EngineHooks] CreateSwapChain completado: 0x"
+              << std::hex << hr << std::dec << std::endl;
+    return hr;
 }
 
 HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
@@ -336,7 +339,19 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
     IDXGIOutput* pRestrictToOutput,
     IDXGISwapChain1** ppSwapChain)
 {
-    if (pDevice) {
+    if (hWnd) {
+        s_gameHwnd = hWnd;
+    }
+
+    // Muy importante: no modificar command queues ni el renderer antes de que DXGI/Streamline
+    // termine de crear la swap chain. Esta ruta debe ser un passthrough real.
+    HRESULT hr = s_originalCreateSwapChainForHwnd
+        ? s_originalCreateSwapChainForHwnd(
+            pFactory, pDevice, hWnd, pDesc,
+            pFullscreenDesc, pRestrictToOutput, ppSwapChain)
+        : E_FAIL;
+
+    if (SUCCEEDED(hr) && pDevice) {
         ID3D12CommandQueue* newQueue = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(
                 __uuidof(ID3D12CommandQueue),
@@ -348,17 +363,10 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
             s_pCommandQueue = newQueue;
         }
     }
-    if (hWnd) {
-        s_gameHwnd = hWnd;
-    }
 
-    // Hook pasivo durante la creación de la swap chain. El renderer se inicializa desde Present().
-    std::cout << "[EngineHooks] CreateSwapChainForHwnd detectado (Queue: 0x" 
-              << std::hex << (uintptr_t)s_pCommandQueue << std::dec << ")" << std::endl;
-
-    return s_originalCreateSwapChainForHwnd ? 
-        s_originalCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain) : 
-        E_FAIL;
+    std::cout << "[EngineHooks] CreateSwapChainForHwnd completado: 0x"
+              << std::hex << hr << std::dec << std::endl;
+    return hr;
 }
 
 HRESULT WINAPI EngineHooks::HookedResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
