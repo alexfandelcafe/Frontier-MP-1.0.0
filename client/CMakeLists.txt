@@ -63,6 +63,7 @@ endif()
 set_target_properties(frontier_core PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
+    SUFFIX ".asi"
 )
 
 add_executable(frontier_launcher
