@@ -145,22 +145,14 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 5. Bucle de actualización del cliente
-    uint32_t scriptBridgeRetryTicks = 0;
     bool worldLoadFallbackLogged = false;
 
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // ScriptBridge carga ScriptHookRDR si hace falta y registra el script
-        // únicamente cuando ha pasado su ventana de inicialización.
-        if (!Frontier::Core::ScriptBridge::isRegistered() &&
-            (++scriptBridgeRetryTicks % 60) == 0) {
-            Frontier::Core::ScriptBridge::registerScript(hModule);
-        }
-
-        // La ejecución de natives ocurre únicamente desde ScriptHookRDR's
-        // script thread. Este hilo persistente solo mantiene red/UI y deja el
-        // registro al bridge para evitar natives fuera del scheduler de RAGE.
+        // The script is registered exactly once from DLL_PROCESS_ATTACH.
+        // This persistent thread does not retry registration and never invokes
+        // natives outside ScriptHookRDR's script scheduler.
         if (!worldLoadFallbackLogged &&
             !Frontier::Core::ScriptBridge::isRegistered() &&
             Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
