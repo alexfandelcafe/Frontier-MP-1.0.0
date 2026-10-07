@@ -155,20 +155,18 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
             Frontier::Core::ScriptBridge::registerScript(hModule);
         }
 
-        // Fallback para instalaciones sin scriptRegister/scriptWait:
-        // el loop persistente mantiene viva la transición solicitada. Las
-        // banderas atómicas de EngineHooks hacen que la secuencia se ejecute
-        // una sola vez aunque HookedWait también llegue a dispararla.
-        Frontier::Core::EngineHooks::processMultiplayerWorldLoad();
-
-        if (!worldLoadFallbackLogged) {
+        // La ejecución de natives ocurre únicamente desde ScriptHookRDR's
+        // script thread. El hilo persistente solo mantiene red/UI y reintenta
+        // registrar el bridge; así evitamos llamar natives desde un hilo ajeno
+        // al scheduler de RAGE.
+        if (!worldLoadFallbackLogged &&
+            !Frontier::Core::ScriptBridge::isRegistered() &&
+            Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
             // El mensaje se emite una sola vez para confirmar que el fallback
             // está activo; la función anterior retorna inmediatamente mientras
             // no haya una solicitud pendiente.
-            if (Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
-                std::cout << "[FrontierClient] Multiplayer world-load fallback loop activo." << std::endl;
-                worldLoadFallbackLogged = true;
-            }
+            std::cout << "[FrontierClient] Esperando ScriptHookRDR para ejecutar la transición multiplayer desde un script thread." << std::endl;
+            worldLoadFallbackLogged = true;
         }
 
         Frontier::UI::CefManager::get().update();
