@@ -75,19 +75,16 @@ Commits:
 - a99fdff48f3908316626b8f4bd756f0c5940b064
 
 La implementación final actual:
-1. Comprueba si gameDir/ScriptHookRDR.dll ya existe y tiene tamaño razonable.
-2. Si falta, crea:
-   launcherDir/dependencies/scripthookrdr/1.5.2/
-3. Descarga automáticamente el ZIP 1.5.2 desde el mirror Dropbox configurado.
+1. Comprueba si launcherDir/ScriptHookRDR.dll ya existe, tiene tamaño razonable y una cabecera PE válida.
+2. Si falta, crea launcherDir/dependencies/scripthookrdr/1.5.2/
+3. Descarga directamente ScriptHookRDR.dll desde el archivo versionado en GitHub Raw.
 4. Guarda primero como .part.
-5. Extrae mediante PowerShell Expand-Archive.
-6. Busca ScriptHookRDR.dll dentro del ZIP.
-7. Guarda una copia en la caché.
-8. Copia ScriptHookRDR.dll al directorio del juego.
-9. Crea scripthookrdr.runtime.txt con la versión/ruta.
-10. Copia ScriptHookRDR.dll únicamente a launcherDir/ScriptHookRDR.dll; nunca a gameDir.
-11. NO instala ni sobrescribe dinput8.dll. Frontier carga ScriptHookRDR.dll explícitamente mediante LoadLibraryEx desde la carpeta de frontier_core.dll, y así se evita modificar el loader ASI del usuario.
-
+5. Valida que el archivo descargado tenga tamaño razonable y firma PE (MZ + PE\0\0).
+6. Guarda una copia válida en la caché del cliente.
+7. Copia ScriptHookRDR.dll únicamente a launcherDir/ScriptHookRDR.dll; nunca a gameDir.
+8. Crea scripthookrdr.runtime.txt con la versión/ruta.
+9. El CMake del cliente también copia el ScriptHookRDR.dll de la raíz del repositorio a build/client/Release durante el POST_BUILD de frontier_launcher.
+10. NO instala ni sobrescribe dinput8.dll. Frontier carga ScriptHookRDR.dll explícitamente mediante LoadLibraryEx desde la carpeta de frontier_core.dll, y así se evita modificar el loader ASI del usuario.
 El launcher aborta antes de CreateProcess si ScriptHookRDR no queda disponible.
 La descarga usa WinHTTP y la dependencia queda exclusivamente en el directorio del cliente.
 El directorio del juego no se modifica ni se copia allí ScriptHookRDR.dll.
@@ -101,20 +98,23 @@ client/CMakeLists.txt ahora agrega:
 MinHook continúa funcionando mediante vendor/minhook si existe o FetchContent en caso contrario.
 
 ## Flujo esperado en el próximo test
+Si el CMake encuentra el DLL en la raíz del repositorio, el build deja:
+build/client/Release/ScriptHookRDR.dll
+
 Al lanzar Frontier:
-[Launcher] Descargando ScriptHookRDR 1.5.2...
-[Launcher] ScriptHookRDR 1.5.2 listo en: <FrontierMP client>\ScriptHookRDR.dll
-[Launcher] La instalación del juego no fue modificada.
+[Launcher] ScriptHookRDR.dll ya está disponible en:
+<FrontierMP client>\\ScriptHookRDR.dll
 [Launcher] Launching RDR.exe suspended...
 
 Después, dentro del juego:
-[ScriptBridge] ScriptHookRDR.dll ya estaba cargado...
-o:
-[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier: <FrontierMP client>\ScriptHookRDR.dll
+[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier:
+<FrontierMP client>\\ScriptHookRDR.dll
 [ScriptBridge] Export count: ...
 [NativeInvoker] ScriptHook native API lista. ...
 [ScriptBridge] Hilo de script FrontierMP registrado en ScriptHookRDR.
 [ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE.
+
+Si el DLL no está presente en el output del build, el launcher puede recuperarlo desde GitHub Raw y guardarlo primero en la caché del cliente.
 
 ## Próximo diagnóstico si falla
 1. Si falla la descarga: registrar HRESULT de URLDownloadToFileA.
