@@ -8,8 +8,8 @@ namespace Frontier::Core {
 
 class ScriptBridge {
 public:
-    // Must be called from DLL_PROCESS_ATTACH, after the launcher has already
-    // loaded ScriptHookRDR. This mirrors the ScriptHook SDK lifecycle.
+    // Kept for DLL lifecycle compatibility. Registration is deferred until
+    // ScriptHookRDR has installed its rage::scrThread::Run hook.
     static void registerScriptEarly(HMODULE module);
     // Resolves ScriptHook exports and attempts registration from the client
     // worker thread. Safe to call repeatedly until registration succeeds.
@@ -24,7 +24,7 @@ private:
     static inline std::atomic<bool> s_registered{false};
     static inline std::atomic<bool> s_warnedUnavailable{false};
     static inline std::atomic<bool> s_registrationRequested{false};
-    static inline std::atomic<bool> s_additionalThreadRegistrationAttempted{false};
+    static inline std::atomic<bool> s_schedulerReadyLogged{false};
 };
 
 } // namespace Frontier::Core
