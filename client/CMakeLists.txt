@@ -71,7 +71,7 @@ add_executable(frontier_launcher
 )
 
 if(WIN32)
-    target_link_libraries(frontier_launcher PRIVATE comdlg32 shell32 ole32 urlmon)
+    target_link_libraries(frontier_launcher PRIVATE comdlg32 shell32 ole32 winhttp)
 endif()
 
 set_target_properties(frontier_launcher PROPERTIES
