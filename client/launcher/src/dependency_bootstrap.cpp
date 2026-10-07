@@ -21,8 +21,6 @@ namespace Frontier::Launcher {
 namespace {
 
 constexpr const char* kScriptHookVersion = "1.5.2";
-constexpr const char* kScriptHookArchiveName = "ScriptHookRDR-164-1-5-2-1738573417.zip";
-
 // Public mirror configured for the runtime dependency bootstrap.
 // ScriptHookRDR remains outside the repository and is downloaded only when
 // the client-side copy is missing.
@@ -415,43 +413,29 @@ DependencyBootstrapResult ensureScriptHookRDR(
     }
 
     const fs::path cacheDirectory =
-        launcherDirectory / "dependencies" / "scripthookrdr" / kScriptHookVersion;
-    const fs::path archivePath = cacheDirectory / kScriptHookArchiveName;
-    const fs::path extractDirectory = cacheDirectory / "extracted";
-    const fs::path cachedScriptHook = cacheDirectory / "ScriptHookRDR.dll";
+        launcherDirectory / "dependencies" /
+        "scripthookrdr" / kScriptHookVersion;
+
+    const fs::path cachedScriptHook =
+        cacheDirectory / "ScriptHookRDR.dll";
 
     fs::create_directories(cacheDirectory, ec);
 
     if (!fileLooksValid(cachedScriptHook)) {
-        if (!fileLooksValid(archivePath)) {
-            if (!downloadFile(kPrimaryDownloadUrl, archivePath)) {
-                result.message = "No se pudo descargar ScriptHookRDR 1.5.2 automáticamente.";
-                return result;
-            }
-            result.downloaded = true;
-        }
-
-        if (!extractZip(archivePath, extractDirectory)) {
-            result.message = "La descarga de ScriptHookRDR no pudo extraerse.";
-            return result;
-        }
-
-        const fs::path extractedScriptHook =
-            findFileRecursive(extractDirectory, "ScriptHookRDR.dll");
-
-        if (extractedScriptHook.empty() ||
-            !copyIfMissing(extractedScriptHook, cachedScriptHook)) {
+        if (!downloadFile(kPrimaryDownloadUrl, cachedScriptHook)) {
             result.message =
-                "El paquete descargado no contiene un ScriptHookRDR.dll válido.";
+                "No se pudo descargar ScriptHookRDR 1.5.2 automáticamente.";
             return result;
         }
+
+        result.downloaded = true;
     }
 
     if (!fileLooksValid(cachedScriptHook)) {
-        result.message = "ScriptHookRDR.dll no quedó disponible en la caché.";
+        result.message =
+            "ScriptHookRDR.dll no quedó disponible en la caché.";
         return result;
     }
-
     if (!copyIfMissing(cachedScriptHook, clientScriptHook)) {
         result.message =
             "No se pudo preparar ScriptHookRDR.dll en el directorio del cliente.";
