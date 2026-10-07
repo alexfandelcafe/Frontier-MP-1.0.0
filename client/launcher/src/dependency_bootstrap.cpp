@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,21 +25,6 @@ constexpr const char* kScriptHookVersion = "1.5.2";
 // the client-side copy is missing.
 constexpr const char* kPrimaryDownloadUrl =
     "https://raw.githubusercontent.com/alexfandelcafe/Frontier-MP-1.0.0/main/ScriptHookRDR.dll";
-
-std::string quotePowerShell(const std::string& value) {
-    std::string quoted = "'";
-    for (char c : value) {
-        if (c == '\0') {
-            quoted += c;
-        } else if (c == '\'') {
-            quoted += "''";
-        } else {
-            quoted += c;
-        }
-    }
-    quoted += "'";
-    return quoted;
-}
 
 bool writeTextFile(const fs::path& path, const std::string& content) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -306,88 +290,6 @@ bool downloadFile(const char* url, const fs::path& destination) {
     std::cout << "[Launcher] ScriptHookRDR descargado correctamente."
               << std::endl;
     return true;
-}
-
-bool extractZip(const fs::path& archive, const fs::path& destination) {
-    std::error_code ec;
-    fs::remove_all(destination, ec);
-    fs::create_directories(destination, ec);
-
-    std::string command =
-        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        "-Command \"Expand-Archive -LiteralPath " +
-        quotePowerShell(archive.string()) +
-        " -DestinationPath " +
-        quotePowerShell(destination.string()) +
-        " -Force\"";
-
-    STARTUPINFOA startupInfo{};
-    startupInfo.cb = sizeof(startupInfo);
-    PROCESS_INFORMATION processInfo{};
-
-    std::vector<char> mutableCommand(command.begin(), command.end());
-    mutableCommand.push_back('\0');
-
-    if (!CreateProcessA(
-            nullptr,
-            mutableCommand.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            CREATE_NO_WINDOW,
-            nullptr,
-            nullptr,
-            &startupInfo,
-            &processInfo)) {
-        std::cerr << "[Launcher] No se pudo ejecutar PowerShell para extraer ScriptHookRDR. GetLastError="
-                  << GetLastError() << std::endl;
-        return false;
-    }
-
-    WaitForSingleObject(processInfo.hProcess, INFINITE);
-
-    DWORD exitCode = 1;
-    GetExitCodeProcess(processInfo.hProcess, &exitCode);
-
-    CloseHandle(processInfo.hThread);
-    CloseHandle(processInfo.hProcess);
-
-    if (exitCode != 0) {
-        std::cerr << "[Launcher] Expand-Archive falló. ExitCode="
-                  << exitCode << std::endl;
-        return false;
-    }
-
-    std::cout << "[Launcher] ScriptHookRDR extraído correctamente."
-              << std::endl;
-    return true;
-}
-
-fs::path findFileRecursive(const fs::path& root, const std::string& filename) {
-    std::error_code ec;
-    if (!fs::exists(root, ec)) {
-        return {};
-    }
-
-    for (const auto& entry : fs::recursive_directory_iterator(
-             root,
-             fs::directory_options::skip_permission_denied,
-             ec)) {
-        if (ec) {
-            ec.clear();
-            continue;
-        }
-        if (!entry.is_regular_file(ec)) {
-            continue;
-        }
-        if (_stricmp(
-                entry.path().filename().string().c_str(),
-                filename.c_str()) == 0) {
-            return entry.path();
-        }
-    }
-
-    return {};
 }
 
 bool copyIfMissing(const fs::path& source, const fs::path& destination) {
