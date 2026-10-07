@@ -223,15 +223,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ScriptHookRDR expects script mods as .asi modules. Frontier therefore
-    // injects frontier_core.asi from the client directory.
-    fs::path dllPath = launcherDir / "frontier_core.asi";
+    // Frontier is loaded manually by the launcher, so keep it as a normal DLL.
+    // The .asi extension is relevant to ScriptHook's automatic loader, which
+    // we are deliberately not using for the client-side module.
+    fs::path dllPath = launcherDir / "frontier_core.dll";
     if (!fs::exists(dllPath)) {
-        dllPath = launcherDir / "data" / "frontier_core.asi";
+        dllPath = launcherDir / "data" / "frontier_core.dll";
     }
 
     if (!fs::exists(dllPath)) {
-        std::cerr << "[Launcher] Error: 'frontier_core.asi' not found in: " << launcherDir.string() << std::endl;
+        std::cerr << "[Launcher] Error: 'frontier_core.dll' not found in: " << launcherDir.string() << std::endl;
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();
         return 1;
