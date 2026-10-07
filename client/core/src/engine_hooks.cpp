@@ -261,43 +261,25 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // This is a real rage::scrThread::Wait invocation. RDRMP's own
-    // client-main.dll uses its ThisFiber::Wait(0) path to execute LoadOnline,
-    // so this hook gives Frontier a genuine RAGE script context even when
-    // ScriptHookRDR did not create a registered ScriptMain for a late-loaded
-    // module.
-    if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
-        static std::atomic<bool> s_fallbackStarted{false};
-        static std::atomic<uint32_t> s_fallbackTicks{0};
+    // Keep this hook strictly diagnostic. The actual multiplayer transition
+    // is executed by ScriptBridge::scriptMain inside ScriptHookRDR's managed
+    // script thread. Calling natives from this hook can duplicate execution
+    // when a registered script is already active.
+    static std::atomic<uint32_t> s_waitHookCalls{0};
+    const uint32_t call =
+        s_waitHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
 
-        if (!s_fallbackStarted.exchange(
-                true,
-                std::memory_order_acq_rel)) {
-            std::cout
-                << "[EngineHooks] Usando rage::scrThread::Wait como contexto "
-                   "de script para la transición multiplayer (fallback RDRMP)."
-                << std::endl;
-        }
-
-        if (NativeInvoker::isReady()) {
-            EngineHooks::processMultiplayerWorldLoad();
-            ++s_fallbackTicks;
-
-            if ((s_fallbackTicks.load(std::memory_order_relaxed) % 120) == 0) {
-                std::cout
-                    << "[EngineHooks] Contexto RAGE activo; transición multiplayer "
-                       "sigue procesándose dentro de scrThread::Wait."
-                    << std::endl;
-            }
-        }
+    if (call == 1) {
+        std::cout
+            << "[EngineHooks] rage::scrThread::Wait interceptado; "
+               "hook de contexto de script activo."
+            << std::endl;
     }
 
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
 }
-
-
 
 void EngineHooks::processMultiplayerWorldLoad() {
     static std::mutex s_worldLoadMutex;
