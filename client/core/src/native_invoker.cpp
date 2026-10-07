@@ -10,16 +10,27 @@ bool NativeInvoker::initialize() {
     if (!s_regPtrAddress) {
         uintptr_t match = PatternScanner::findPattern(nullptr, "4C 8B 1D ? ? ? ? 41 8B C1");
         if (!match) {
+            static bool loggedPatternMiss = false;
+            if (!loggedPatternMiss) {
+                loggedPatternMiss = true;
+                std::cerr << "[NativeInvoker] No se encontró el patrón de sm_CommandsRegistration: "
+                          << "4C 8B 1D ? ? ? ? 41 8B C1" << std::endl;
+            }
             return false;
         }
 
         s_regPtrAddress = PatternScanner::getRelativeAddress(match, 7, 3);
+        std::cout << "[NativeInvoker] Patrón de registro encontrado en 0x"
+                  << std::hex << match
+                  << ", global resuelto en 0x"
+                  << s_regPtrAddress
+                  << std::dec << std::endl;
     }
 
     if (s_regPtrAddress) {
         s_commandsRegistration = *reinterpret_cast<uintptr_t**>(s_regPtrAddress);
         if (s_commandsRegistration && s_commandsRegistration[0] != 0) {
-            std::cout << "[NativeInvoker] rage::scrThread::sm_CommandsRegistration listo en 0x" 
+            std::cout << "[NativeInvoker] rage::scrThread::sm_CommandsRegistration listo en 0x"
                       << std::hex << (uintptr_t)s_commandsRegistration << std::dec << std::endl;
             return true;
         }
