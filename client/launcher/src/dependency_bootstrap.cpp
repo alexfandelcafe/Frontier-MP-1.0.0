@@ -431,7 +431,8 @@ DependencyBootstrapResult ensureScriptHookRDR(
 
     // The game installation is deliberately not touched. Frontier owns this
     // dependency and loads it explicitly from the client directory.
-    if (fileLooksValid(clientScriptHook)) {
+    if (fileLooksValid(clientScriptHook) &&
+        fileLooksLikePeImage(clientScriptHook)) {
         result.ready = true;
         result.preparedInClient = true;
         result.scriptHookPath = clientScriptHook;
