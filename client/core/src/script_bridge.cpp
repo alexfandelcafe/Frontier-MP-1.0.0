@@ -374,6 +374,10 @@ void ScriptBridge::initialize(HMODULE module) {
     resolveScriptHook(module);
     tryRegister(module);
 
+    if (!GetModuleHandleA("ScriptHookRDR.dll")) {
+        return;
+    }
+
     if (!s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
                 true,
