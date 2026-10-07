@@ -261,10 +261,37 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // Natives must only execute from ScriptHookRDR's registered ScriptMain.
-    // The old fallback invoked processMultiplayerWorldLoad from this hook when
-    // ScriptMain was unavailable, which could call nativeCall outside the
-    // ScriptHook-managed callback and destabilize the game.
+    // This is a real rage::scrThread::Wait invocation. RDRMP's own
+    // client-main.dll uses its ThisFiber::Wait(0) path to execute LoadOnline,
+    // so this hook gives Frontier a genuine RAGE script context even when
+    // ScriptHookRDR did not create a registered ScriptMain for a late-loaded
+    // module.
+    if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+        static std::atomic<bool> s_fallbackStarted{false};
+        static std::atomic<uint32_t> s_fallbackTicks{0};
+
+        if (!s_fallbackStarted.exchange(
+                true,
+                std::memory_order_acq_rel)) {
+            std::cout
+                << "[EngineHooks] Usando rage::scrThread::Wait como contexto "
+                   "de script para la transición multiplayer (fallback RDRMP)."
+                << std::endl;
+        }
+
+        if (NativeInvoker::isReady()) {
+            EngineHooks::processMultiplayerWorldLoad();
+            ++s_fallbackTicks;
+
+            if ((s_fallbackTicks.load(std::memory_order_relaxed) % 120) == 0) {
+                std::cout
+                    << "[EngineHooks] Contexto RAGE activo; transición multiplayer "
+                       "sigue procesándose dentro de scrThread::Wait."
+                    << std::endl;
+            }
+        }
+    }
+
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
