@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <iostream>
 #include <fstream>
-#include <iomanip>
 #include <sstream>
 
 namespace Frontier::Core {
@@ -33,6 +32,12 @@ void appendNativeLog(const std::string& line) {
     if (log.is_open()) {
         log << line << std::endl;
     }
+}
+
+std::string hexValue(uintptr_t value) {
+    std::ostringstream stream;
+    stream << "0x" << std::hex << value << std::dec;
+    return stream.str();
 }
 
 bool isReadableAddress(uintptr_t address, SIZE_T bytes = sizeof(uintptr_t)) {
@@ -75,139 +80,131 @@ bool isExecutableAddress(uintptr_t address) {
            protection == PAGE_EXECUTE_WRITECOPY;
 }
 
-
-// Estos helpers contienen exclusivamente tipos POD y __try/__except.
-// MSVC C2712 impide usar __try directamente en funciones con objetos C++
-// que requieren desenredo.
-int sehGetCommand(scrGetCommandHandler function, uint32_t hash,
-                  scrNativeHandler* outHandler, DWORD* outCode, uintptr_t* outAddress) {
-    if (outHandler) *outHandler = nullptr;
-    if (outCode) *outCode = 0;
-    if (outAddress) *outAddress = 0;
+// Estos helpers contienen solo tipos POD. MSVC permite __try/__except aquí
+// sin activar C2712 en las funciones que construyen objetos C++.
+int sehGetCommand(
+    scrGetCommandHandler function,
+    uint32_t hash,
+    scrNativeHandler* outHandler,
+    DWORD* outCode)
+{
+    if (outHandler) {
+        *outHandler = nullptr;
+    }
+    if (outCode) {
+        *outCode = 0;
+    }
 
     __try {
-        if (outHandler) *outHandler = function ? function(hash) : nullptr;
+        if (outHandler) {
+            *outHandler = function ? function(hash) : nullptr;
+        }
         return 1;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (outCode) *outCode = GetExceptionCode();
-        if (outAddress) {
-            EXCEPTION_POINTERS* info = GetExceptionInformation();
-            if (info && info->ExceptionRecord) {
-                *outAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
-            }
+        if (outCode) {
+            *outCode = GetExceptionCode();
         }
         return 0;
     }
 }
 
-int sehReadRegistration(uintptr_t* registration, uintptr_t* outTable,
-                        uint32_t* outCapacity, DWORD* outCode, uintptr_t* outAddress) {
-    if (outTable) *outTable = 0;
-    if (outCapacity) *outCapacity = 0;
-    if (outCode) *outCode = 0;
-    if (outAddress) *outAddress = 0;
+int sehReadRegistration(
+    uintptr_t* registration,
+    uintptr_t* outTable,
+    uint32_t* outCapacity,
+    DWORD* outCode)
+{
+    if (outTable) {
+        *outTable = 0;
+    }
+    if (outCapacity) {
+        *outCapacity = 0;
+    }
+    if (outCode) {
+        *outCode = 0;
+    }
 
     __try {
-        if (outTable) *outTable = registration ? registration[0] : 0;
-        if (outCapacity) *outCapacity = registration ? static_cast<uint32_t>(registration[1]) : 0;
+        if (outTable) {
+            *outTable = registration ? registration[0] : 0;
+        }
+        if (outCapacity) {
+            *outCapacity = registration ? static_cast<uint32_t>(registration[1]) : 0;
+        }
         return 1;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (outCode) *outCode = GetExceptionCode();
-        if (outAddress) {
-            EXCEPTION_POINTERS* info = GetExceptionInformation();
-            if (info && info->ExceptionRecord) {
-                *outAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
-            }
+        if (outCode) {
+            *outCode = GetExceptionCode();
         }
         return 0;
     }
 }
 
-int sehReadEntry(uintptr_t entryAddress, uint32_t* outHash,
-                 scrNativeHandler* outHandler, DWORD* outCode, uintptr_t* outAddress) {
-    if (outHash) *outHash = 0;
-    if (outHandler) *outHandler = nullptr;
-    if (outCode) *outCode = 0;
-    if (outAddress) *outAddress = 0;
+int sehReadEntry(
+    uintptr_t entryAddress,
+    uint32_t* outHash,
+    scrNativeHandler* outHandler,
+    DWORD* outCode)
+{
+    if (outHash) {
+        *outHash = 0;
+    }
+    if (outHandler) {
+        *outHandler = nullptr;
+    }
+    if (outCode) {
+        *outCode = 0;
+    }
 
     __try {
-        if (outHash) *outHash = *reinterpret_cast<uint32_t*>(entryAddress);
-        if (outHandler) *outHandler = *reinterpret_cast<scrNativeHandler*>(entryAddress + 8);
+        if (outHash) {
+            *outHash = *reinterpret_cast<uint32_t*>(entryAddress);
+        }
+        if (outHandler) {
+            *outHandler = *reinterpret_cast<scrNativeHandler*>(entryAddress + 8);
+        }
         return 1;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (outCode) *outCode = GetExceptionCode();
-        if (outAddress) {
-            EXCEPTION_POINTERS* info = GetExceptionInformation();
-            if (info && info->ExceptionRecord) {
-                *outAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
-            }
+        if (outCode) {
+            *outCode = GetExceptionCode();
         }
         return 0;
     }
 }
 
-int sehInvoke(scrNativeHandler handler, scrNativeCallContext* context,
-              DWORD* outCode, uintptr_t* outAddress) {
-    if (outCode) *outCode = 0;
-    if (outAddress) *outAddress = 0;
+int sehInvoke(
+    scrNativeHandler handler,
+    scrNativeCallContext* context,
+    DWORD* outCode)
+{
+    if (outCode) {
+        *outCode = 0;
+    }
 
     __try {
-        if (handler) handler(context);
+        if (handler) {
+            handler(context);
+        }
         return 1;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (outCode) *outCode = GetExceptionCode();
-        if (outAddress) {
-            EXCEPTION_POINTERS* info = GetExceptionInformation();
-            if (info && info->ExceptionRecord) {
-                *outAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
-            }
+        if (outCode) {
+            *outCode = GetExceptionCode();
         }
         return 0;
     }
 }
 
-void logSehFailure(const char* phase, uint32_t hash, DWORD code, uintptr_t address) {
+void logSehFailure(const char* phase, uint32_t hash, DWORD code) {
     std::ostringstream line;
     line << "[NativeInvoker] SEH atrapó una excepción durante " << phase
          << " | code=0x" << std::hex << code
-         << " | exceptionAddress=" << hexValue(address)
          << " | hash=" << hexValue(hash);
     appendNativeLog(line.str());
     std::cerr << line.str() << std::endl;
-}
-
-std::string hexValue(uintptr_t value) {
-    std::ostringstream stream;
-    stream << "0x" << std::hex << value << std::dec;
-    return stream.str();
-}
-
-int nativeExceptionFilter(EXCEPTION_POINTERS* exceptionInfo, const char* phase, uint32_t hash) {
-    uintptr_t exceptionAddress = 0;
-    DWORD code = EXCEPTION_ACCESS_VIOLATION;
-
-    if (exceptionInfo) {
-        if (exceptionInfo->ExceptionRecord) {
-            code = exceptionInfo->ExceptionRecord->ExceptionCode;
-            exceptionAddress =
-                reinterpret_cast<uintptr_t>(exceptionInfo->ExceptionRecord->ExceptionAddress);
-        }
-    }
-
-    std::ostringstream line;
-    line << "[NativeInvoker] SEH atrapó excepción durante " << phase
-         << " | code=0x" << std::hex << code
-         << " | exceptionAddress=" << hexValue(exceptionAddress)
-         << " | hash=" << hexValue(hash);
-
-    appendNativeLog(line.str());
-    std::cerr << line.str() << std::endl;
-
-    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 } // namespace
@@ -237,6 +234,7 @@ bool NativeInvoker::initialize() {
         }
 
         s_regPtrAddress = PatternScanner::getRelativeAddress(match, 7, 3);
+
         std::ostringstream line;
         line << "[NativeInvoker] Patrón encontrado en "
              << hexValue(match)
@@ -248,20 +246,23 @@ bool NativeInvoker::initialize() {
 
     if (!isReadableAddress(s_regPtrAddress, sizeof(uintptr_t))) {
         const std::string message =
-            "[NativeInvoker] El global resuelto no es legible: " + hexValue(s_regPtrAddress);
+            "[NativeInvoker] El global resuelto no es legible: " +
+            hexValue(s_regPtrAddress);
         std::cerr << message << std::endl;
         appendNativeLog(message);
         return false;
     }
 
-    s_commandsRegistration = *reinterpret_cast<uintptr_t**>(s_regPtrAddress);
+    s_commandsRegistration =
+        *reinterpret_cast<uintptr_t**>(s_regPtrAddress);
 
     if (!s_commandsRegistration) {
         return false;
     }
 
-    if (!isReadableAddress(reinterpret_cast<uintptr_t>(s_commandsRegistration),
-                           sizeof(uintptr_t) * 2)) {
+    if (!isReadableAddress(
+            reinterpret_cast<uintptr_t>(s_commandsRegistration),
+            sizeof(uintptr_t) * 2)) {
         const std::string message =
             "[NativeInvoker] sm_CommandsRegistration apunta a memoria no legible: " +
             hexValue(reinterpret_cast<uintptr_t>(s_commandsRegistration));
@@ -296,7 +297,8 @@ void NativeInvoker::init(uintptr_t getCommandAddress) {
         return;
     }
 
-    s_getCommandFunc = reinterpret_cast<scrGetCommandHandler>(getCommandAddress);
+    s_getCommandFunc =
+        reinterpret_cast<scrGetCommandHandler>(getCommandAddress);
 
     std::ostringstream line;
     line << "[NativeInvoker] getCommand handler configurado en "
@@ -312,12 +314,17 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
 
     if (s_getCommandFunc) {
         scrNativeHandler handler = nullptr;
-
         DWORD exceptionCode = 0;
-        uintptr_t exceptionAddress = 0;
-        if (!sehGetCommand(s_getCommandFunc, targetHash, &handler,
-                           &exceptionCode, &exceptionAddress)) {
-            logSehFailure("s_getCommandFunc", targetHash, exceptionCode, exceptionAddress);
+
+        if (!sehGetCommand(
+                s_getCommandFunc,
+                targetHash,
+                &handler,
+                &exceptionCode)) {
+            logSehFailure(
+                "s_getCommandFunc",
+                targetHash,
+                exceptionCode);
             s_faulted.store(true, std::memory_order_release);
             return nullptr;
         }
@@ -330,7 +337,8 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
             std::ostringstream line;
             line << "[NativeInvoker] getCommand devolvió handler no ejecutable para hash "
                  << hexValue(targetHash)
-                 << ": " << hexValue(reinterpret_cast<uintptr_t>(handler));
+                 << ": "
+                 << hexValue(reinterpret_cast<uintptr_t>(handler));
             appendNativeLog(line.str());
             std::cerr << line.str() << std::endl;
             return nullptr;
@@ -340,8 +348,9 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
     }
 
     if (!s_commandsRegistration ||
-        !isReadableAddress(reinterpret_cast<uintptr_t>(s_commandsRegistration),
-                           sizeof(uintptr_t) * 2)) {
+        !isReadableAddress(
+            reinterpret_cast<uintptr_t>(s_commandsRegistration),
+            sizeof(uintptr_t) * 2)) {
         if (!initialize()) {
             return nullptr;
         }
@@ -349,13 +358,17 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
 
     uintptr_t tablePtr = 0;
     uint32_t capacity = 0;
-
     DWORD exceptionCode = 0;
-    uintptr_t exceptionAddress = 0;
-    if (!sehReadRegistration(s_commandsRegistration, &tablePtr, &capacity,
-                             &exceptionCode, &exceptionAddress)) {
-        logSehFailure("lectura de sm_CommandsRegistration", targetHash,
-                      exceptionCode, exceptionAddress);
+
+    if (!sehReadRegistration(
+            s_commandsRegistration,
+            &tablePtr,
+            &capacity,
+            &exceptionCode)) {
+        logSehFailure(
+            "lectura de sm_CommandsRegistration",
+            targetHash,
+            exceptionCode);
         s_faulted.store(true, std::memory_order_release);
         return nullptr;
     }
@@ -371,16 +384,14 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
         return nullptr;
     }
 
-    // La implementación actual trata la tabla como slots abiertos de 16 bytes.
-    // Validamos cada acceso antes de desreferenciarlo para evitar que una firma
-    // incorrecta de RDR.exe convierta un hash en un crash del proceso.
     uint8_t* table = reinterpret_cast<uint8_t*>(tablePtr);
     uint32_t probeHash = targetHash;
     uint32_t index = targetHash % capacity;
 
     for (uint32_t probes = 0; probes < capacity; ++probes) {
         const uintptr_t entryAddress =
-            reinterpret_cast<uintptr_t>(table) + static_cast<uintptr_t>(index) * 16;
+            reinterpret_cast<uintptr_t>(table) +
+            static_cast<uintptr_t>(index) * 16;
 
         if (!isReadableAddress(entryAddress, 16)) {
             std::ostringstream line;
@@ -396,13 +407,17 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
 
         uint32_t entryHash = 0;
         scrNativeHandler handler = nullptr;
-
         exceptionCode = 0;
-        exceptionAddress = 0;
-        if (!sehReadEntry(entryAddress, &entryHash, &handler,
-                          &exceptionCode, &exceptionAddress)) {
-            logSehFailure("lectura de entrada nativa", targetHash,
-                          exceptionCode, exceptionAddress);
+
+        if (!sehReadEntry(
+                entryAddress,
+                &entryHash,
+                &handler,
+                &exceptionCode)) {
+            logSehFailure(
+                "lectura de entrada nativa",
+                targetHash,
+                exceptionCode);
             s_faulted.store(true, std::memory_order_release);
             return nullptr;
         }
@@ -413,17 +428,22 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
                 std::ostringstream line;
                 line << "[NativeInvoker] Hash encontrado pero handler inválido para "
                      << hexValue(targetHash)
-                     << " | handler=" << hexValue(reinterpret_cast<uintptr_t>(handler))
-                     << " | entry=" << hexValue(entryAddress);
+                     << " | handler="
+                     << hexValue(reinterpret_cast<uintptr_t>(handler))
+                     << " | entry="
+                     << hexValue(entryAddress);
                 appendNativeLog(line.str());
                 std::cerr << line.str() << std::endl;
                 return nullptr;
             }
 
             std::ostringstream line;
-            line << "[NativeInvoker] Hash " << hexValue(targetHash)
-                 << " -> handler " << hexValue(reinterpret_cast<uintptr_t>(handler))
-                 << " | entry=" << hexValue(entryAddress);
+            line << "[NativeInvoker] Hash "
+                 << hexValue(targetHash)
+                 << " -> handler "
+                 << hexValue(reinterpret_cast<uintptr_t>(handler))
+                 << " | entry="
+                 << hexValue(entryAddress);
             appendNativeLog(line.str());
             return handler;
         }
@@ -437,7 +457,8 @@ scrNativeHandler NativeInvoker::findNative(uint32_t targetHash) {
         index = (step + index) % capacity;
     }
 
-    appendNativeLog("[NativeInvoker] Sondeo agotado sin encontrar el hash.");
+    appendNativeLog(
+        "[NativeInvoker] Sondeo agotado sin encontrar el hash.");
     return nullptr;
 }
 
@@ -453,7 +474,6 @@ void NativeInvoker::endCall(uint32_t hash) {
     }
 
     scrNativeHandler handler = findNative(hash);
-
     if (!handler) {
         return;
     }
@@ -465,20 +485,30 @@ void NativeInvoker::endCall(uint32_t hash) {
 
     {
         std::ostringstream line;
-        line << "[NativeInvoker] Llamando hash " << hexValue(hash)
-             << " | handler=" << hexValue(reinterpret_cast<uintptr_t>(handler))
-             << " | argc=" << s_argCount;
+        line << "[NativeInvoker] Llamando hash "
+             << hexValue(hash)
+             << " | handler="
+             << hexValue(reinterpret_cast<uintptr_t>(handler))
+             << " | argc="
+             << s_argCount;
         appendNativeLog(line.str());
         std::cout << line.str() << std::endl;
     }
 
     DWORD exceptionCode = 0;
-    uintptr_t exceptionAddress = 0;
-    if (!sehInvoke(handler, &s_context, &exceptionCode, &exceptionAddress)) {
-        logSehFailure("handler nativo", hash, exceptionCode, exceptionAddress);
+    if (!sehInvoke(
+            handler,
+            &s_context,
+            &exceptionCode)) {
+        logSehFailure(
+            "handler nativo",
+            hash,
+            exceptionCode);
         s_faulted.store(true, std::memory_order_release);
-        std::cerr << "[NativeInvoker] Se deshabilitó el invocador tras la excepción." << std::endl;
-        appendNativeLog("[NativeInvoker] Se deshabilitó el invocador tras la excepción.");
+        std::cerr << "[NativeInvoker] Se deshabilitó el invocador tras la excepción."
+                  << std::endl;
+        appendNativeLog(
+            "[NativeInvoker] Se deshabilitó el invocador tras la excepción.");
         return;
     }
 }
