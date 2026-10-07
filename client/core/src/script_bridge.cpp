@@ -84,14 +84,10 @@ void resolveScriptHook() {
         hookModule, "nativePush64");
     const auto nativeCall = resolveMangledExport<ScriptNativeCallFn>(
         hookModule, "nativeCall");
-    const auto getCommandFromHash = resolveMangledExport<ScriptGetCommandFn>(
-        hookModule, "getCommandFromHash");
-
     NativeInvoker::setScriptHookApi(
         nativeInit,
         nativePush64,
-        nativeCall,
-        getCommandFromHash);
+        nativeCall);
 }
 
 } // namespace
