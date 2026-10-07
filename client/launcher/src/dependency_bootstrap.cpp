@@ -34,7 +34,7 @@ constexpr const char* kPrimaryDownloadUrl =
 std::string quotePowerShell(const std::string& value) {
     std::string quoted = "'";
     for (char c : value) {
-        if (c == '\\0') {
+        if (c == '\0') {
             quoted += c;
         } else if (c == '\'') {
             quoted += "''";
