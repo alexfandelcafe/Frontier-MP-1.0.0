@@ -266,6 +266,63 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
 }
 
 
+
+void EngineHooks::processMultiplayerWorldLoad() {
+    if (!s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (!NativeInvoker::isReady()) {
+        return;
+    }
+
+    static uint32_t s_readyPollCounter = 0;
+
+    if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
+        std::cout << "[EngineHooks] Invocando MULTIPLAYER_LOAD_PREPARE..." << std::endl;
+        NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
+        std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
+    }
+
+    if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+        ++s_readyPollCounter;
+
+        const bool stillPreparing =
+            NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+
+        if (stillPreparing) {
+            if ((s_readyPollCounter % 60) == 0) {
+                std::cout << "[EngineHooks] Esperando a que RDR1 termine de preparar la carga online..."
+                          << std::endl;
+            }
+            return;
+        }
+
+        s_multiplayerTransitionStarted.store(true, std::memory_order_release);
+        std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
+
+        std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD,
+            "fileSetForMPLoad");
+
+        std::cout << "[EngineHooks] Invocando fileStartupChecksComplete..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD,
+            "fileStartupChecksComplete");
+
+        std::cout << "[EngineHooks] Invocando StartScreen1..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::START_SCREEN_1,
+            "StartScreen1");
+
+        std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1."
+                  << std::endl;
+    }
+
+    PlayerFactory::processPendingSpawn();
+}
+
 bool EngineHooks::hookScriptThread() {
     std::cout << "[EngineHooks] Interceptando hilo de scripts de RDR1 (bloqueo de modo historia)..." << std::endl;
 
