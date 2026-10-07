@@ -261,21 +261,10 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // ScriptHookRDR no expone scriptRegister/scriptWait en esta instalación.
-    // Mientras tanto, ejecutar la transición desde rage::scrThread::Wait nos
-    // mantiene dentro de un scheduler/fiber de scripts real.
-    static std::atomic<bool> s_fallbackLogged{false};
-
-    if (!ScriptBridge::isRegistered() &&
-        s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
-        if (!s_fallbackLogged.exchange(true, std::memory_order_acq_rel)) {
-            std::cout << "[EngineHooks] ScriptBridge no disponible; usando rage::scrThread::Wait como fallback para la transición multiplayer."
-                      << std::endl;
-        }
-
-        EngineHooks::processMultiplayerWorldLoad();
-    }
-
+    // Natives must only execute from ScriptHookRDR's registered ScriptMain.
+    // The old fallback invoked processMultiplayerWorldLoad from this hook when
+    // ScriptMain was unavailable, which could call nativeCall outside the
+    // ScriptHook-managed callback and destabilize the game.
     if (s_originalWait) {
         s_originalWait(scrThread, waitTime);
     }
