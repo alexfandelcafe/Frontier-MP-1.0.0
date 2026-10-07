@@ -143,6 +143,8 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 
     // 5. Bucle de actualización del cliente
     uint32_t scriptBridgeRetryTicks = 0;
+    bool worldLoadFallbackLogged = false;
+
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
@@ -151,6 +153,22 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
             (++scriptBridgeRetryTicks % 60) == 0) {
             Frontier::Core::ScriptBridge::registerScript(hModule);
+        }
+
+        // Fallback para instalaciones sin scriptRegister/scriptWait:
+        // el loop persistente mantiene viva la transición solicitada. Las
+        // banderas atómicas de EngineHooks hacen que la secuencia se ejecute
+        // una sola vez aunque HookedWait también llegue a dispararla.
+        Frontier::Core::EngineHooks::processMultiplayerWorldLoad();
+
+        if (!worldLoadFallbackLogged) {
+            // El mensaje se emite una sola vez para confirmar que el fallback
+            // está activo; la función anterior retorna inmediatamente mientras
+            // no haya una solicitud pendiente.
+            if (Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
+                std::cout << "[FrontierClient] Multiplayer world-load fallback loop activo." << std::endl;
+                worldLoadFallbackLogged = true;
+            }
         }
 
         Frontier::UI::CefManager::get().update();
