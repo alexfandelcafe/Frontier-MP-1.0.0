@@ -113,6 +113,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     // 5. Bucle de actualización del cliente
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
+        Frontier::Core::EngineHooks::processMultiplayerWorldLoad();
         Frontier::UI::CefManager::get().update();
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
     }
