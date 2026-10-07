@@ -112,13 +112,11 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // Cargar ScriptHookRDR fuera de DllMain/loader lock y dejar que
-    // ScriptBridge registre el callback después de que ScriptHook termine
-    // su inicialización interna.
-    Frontier::Core::ScriptBridge::registerScript(hModule);
-    appendBootLog(modDir, Frontier::Core::ScriptBridge::isRegistered()
-        ? "[ScriptBridge] Registered."
-        : "[ScriptBridge] Registration pending.");
+    // ScriptHookRDR was preloaded by the launcher. Frontier registered its
+    // ScriptMain during DLL_PROCESS_ATTACH, matching the ScriptHook SDK lifecycle.
+    Frontier::Core::ScriptBridge::initialize(hModule);
+    appendBootLog(modDir,
+        "[ScriptBridge] Early registration requested from DLL_PROCESS_ATTACH.");
 
     // 2. Inicializar hooks de DirectX 12 / DirectX 11, WndProc y bloqueo de campaña
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
@@ -182,13 +180,20 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
+        // ScriptHookRDR is loaded first by the launcher while the game is
+        // suspended. Register Frontier immediately during module attach.
+        Frontier::Core::ScriptBridge::registerScriptEarly(hModule);
+
         DisableThreadLibraryCalls(hModule);
-        HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
+        HANDLE hThread = CreateThread(nullptr, 0,
+            (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
             CloseHandle(hThread);
-            OutputDebugStringA("[FrontierClient] FrontierMainThread created.\n");
+            OutputDebugStringA(
+                "[FrontierClient] FrontierMainThread created.\n");
         } else {
-            OutputDebugStringA("[FrontierClient] CreateThread failed in DllMain.\n");
+            OutputDebugStringA(
+                "[FrontierClient] CreateThread failed in DllMain.\n");
         }
     }
     return TRUE;
