@@ -21,6 +21,13 @@ static fs::path getModDirectory(HMODULE hModule) {
     return fs::path(path).parent_path();
 }
 
+static void appendBootLog(const fs::path& modDir, const std::string& message) {
+    std::ofstream log(modDir / "frontier_core_boot.log", std::ios::app);
+    if (log.is_open()) {
+        log << message << std::endl;
+    }
+}
+
 struct ClientConfig {
     std::string playerName{"Outlaw_Player"};
     std::string serverIp{"127.0.0.1"};
@@ -74,12 +81,22 @@ static ClientConfig loadClientConfig(const fs::path& modDir) {
 DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     HMODULE hModule = static_cast<HMODULE>(lpParam);
     fs::path modDir = getModDirectory(hModule);
+    appendBootLog(modDir, "[FrontierClient] FrontierMainThread started.");
 
     ClientConfig cfg = loadClientConfig(modDir);
+    appendBootLog(modDir, "[FrontierClient] Settings loaded.");
 
     // 1. Abrir consola de depuración interactiva
     if (cfg.showConsole) {
-        AllocConsole();
+        if (!GetConsoleWindow()) {
+            if (!AllocConsole()) {
+                appendBootLog(modDir, "[FrontierClient] AllocConsole failed: " + std::to_string(GetLastError()));
+            } else {
+                appendBootLog(modDir, "[FrontierClient] AllocConsole succeeded.");
+            }
+        } else {
+            appendBootLog(modDir, "[FrontierClient] Existing console detected.");
+        }
         FILE* fDummy = nullptr;
         freopen_s(&fDummy, "CONOUT$", "w", stdout);
         freopen_s(&fDummy, "CONOUT$", "w", stderr);
@@ -95,9 +112,18 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
+    // Registrar ScriptHookRDR fuera de DllMain/loader lock.
+    Frontier::Core::ScriptBridge::registerScript(hModule);
+    appendBootLog(modDir, Frontier::Core::ScriptBridge::isRegistered()
+        ? "[ScriptBridge] Registered."
+        : "[ScriptBridge] Not registered yet.");
+
     // 2. Inicializar hooks de DirectX 12 / DirectX 11, WndProc y bloqueo de campaña
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
-    Frontier::Core::EngineHooks::initialize();
+    const bool engineHooksReady = Frontier::Core::EngineHooks::initialize();
+    appendBootLog(modDir, engineHooksReady
+        ? "[EngineHooks] initialize returned TRUE."
+        : "[EngineHooks] initialize returned FALSE.");
 
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout << "[ScriptBridge] ScriptHookRDR no estaba disponible al inicio; el pump de script no fue registrado." << std::endl;
@@ -137,10 +163,12 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        Frontier::Core::ScriptBridge::registerScript(hModule);
         HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
             CloseHandle(hThread);
+            OutputDebugStringA("[FrontierClient] FrontierMainThread created.\n");
+        } else {
+            OutputDebugStringA("[FrontierClient] CreateThread failed in DllMain.\n");
         }
     }
     return TRUE;
