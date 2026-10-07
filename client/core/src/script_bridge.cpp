@@ -360,7 +360,7 @@ void ScriptBridge::registerScript(HMODULE module) {
                 std::memory_order_acq_rel)) {
             std::cout
                 << "[ScriptBridge] ScriptHookRDR cargado; esperando "
-                   ""[INIT] Finished hooking functions" antes de registrar FrontierMP."
+                   "\"[INIT] Finished hooking functions\" antes de registrar FrontierMP."
                 << std::endl;
         }
         return;
