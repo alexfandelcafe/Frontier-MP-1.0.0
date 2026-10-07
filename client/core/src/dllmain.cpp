@@ -112,17 +112,19 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // ScriptHookRDR is staged after Frontier by the launcher. The bridge waits
-    // until ScriptHook has installed its real rage::scrThread::Run hook and
-    // then submits exactly one registration from this worker thread.
-    Frontier::Core::ScriptBridge::initialize(hModule);
-
-    // 2. Inicializar hooks de DirectX 12 / DirectX 11, WndProc y bloqueo de campaña
+    // 2. Inicializar MinHook, DirectX/WndProc y el resto de interceptores.
+    // ScriptBridge instala después su interceptor sobre el detour real de
+    // rage::scrThread::Run de ScriptHookRDR, reutilizando la misma instancia
+    // de MinHook.
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
     const bool engineHooksReady = Frontier::Core::EngineHooks::initialize();
     appendBootLog(modDir, engineHooksReady
         ? "[EngineHooks] initialize returned TRUE."
         : "[EngineHooks] initialize returned FALSE.");
+
+    // ScriptHookRDR se inicializa asincrónicamente. El bridge espera a que su
+    // propio Run hook exista, instala nuestro interceptor y registra Frontier.
+    Frontier::Core::ScriptBridge::initialize(hModule);
 
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout
