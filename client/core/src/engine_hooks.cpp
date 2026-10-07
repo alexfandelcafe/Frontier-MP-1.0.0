@@ -2,6 +2,7 @@
 #include "core/native_invoker.hpp"
 #include "core/native_hashes.hpp"
 #include "core/player_factory.hpp"
+#include "core/script_bridge.hpp"
 #include "core/pattern_scanner.hpp"
 #include "ui/d3d11_renderer.hpp"
 #include <MinHook.h>
@@ -260,13 +261,18 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // Fallback: en esta build no está disponible la API de ScriptHookRDR
-    // (scriptRegister/scriptWait), así que usamos directamente el contexto
-    // real de rage::scrThread::Wait para ejecutar la transición multiplayer.
-    //
-    // Esto ocurre dentro del scheduler de scripts de RAGE, que es precisamente
-    // el contexto necesario para las natives de carga de mundo.
-    if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+    // ScriptHookRDR no expone scriptRegister/scriptWait en esta instalación.
+    // Mientras tanto, ejecutar la transición desde rage::scrThread::Wait nos
+    // mantiene dentro de un scheduler/fiber de scripts real.
+    static std::atomic<bool> s_fallbackLogged{false};
+
+    if (!ScriptBridge::isRegistered() &&
+        s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+        if (!s_fallbackLogged.exchange(true, std::memory_order_acq_rel)) {
+            std::cout << "[EngineHooks] ScriptBridge no disponible; usando rage::scrThread::Wait como fallback para la transición multiplayer."
+                      << std::endl;
+        }
+
         EngineHooks::processMultiplayerWorldLoad();
     }
 
