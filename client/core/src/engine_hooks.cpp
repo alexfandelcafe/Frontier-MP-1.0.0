@@ -39,6 +39,9 @@ static IDXGISwapChain* s_pendingSwapChain = nullptr;
 static constexpr uint32_t kOverlayStartupDelayFrames = 90; // ~1.5 s a 60 FPS
 static std::recursive_mutex s_graphicsMutex;
 static IDXGISwapChain* s_pLastSwapChain = nullptr;
+static std::atomic<bool> s_multiplayerWorldRequested{false};
+static std::atomic<bool> s_multiplayerPreparationStarted{false};
+static std::atomic<bool> s_multiplayerTransitionStarted{false};
 
 bool EngineHooks::initialize() {
     std::cout << "[EngineHooks] Inicializando MinHook e interceptor seguro..." << std::endl;
