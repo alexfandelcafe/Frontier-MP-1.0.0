@@ -67,10 +67,11 @@ set_target_properties(frontier_core PROPERTIES
 
 add_executable(frontier_launcher
     launcher/src/main.cpp
+    launcher/src/dependency_bootstrap.cpp
 )
 
 if(WIN32)
-    target_link_libraries(frontier_launcher PRIVATE comdlg32 shell32 ole32)
+    target_link_libraries(frontier_launcher PRIVATE comdlg32 shell32 ole32 urlmon)
 endif()
 
 set_target_properties(frontier_launcher PROPERTIES
