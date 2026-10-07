@@ -112,11 +112,13 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // Registrar ScriptHookRDR fuera de DllMain/loader lock.
+    // Cargar ScriptHookRDR fuera de DllMain/loader lock y dejar que
+    // ScriptBridge registre el callback después de que ScriptHook termine
+    // su inicialización interna.
     Frontier::Core::ScriptBridge::registerScript(hModule);
     appendBootLog(modDir, Frontier::Core::ScriptBridge::isRegistered()
         ? "[ScriptBridge] Registered."
-        : "[ScriptBridge] Not registered yet.");
+        : "[ScriptBridge] Registration pending.");
 
     // 2. Inicializar hooks de DirectX 12 / DirectX 11, WndProc y bloqueo de campaña
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
@@ -126,7 +128,10 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
         : "[EngineHooks] initialize returned FALSE.");
 
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
-        std::cout << "[ScriptBridge] ScriptHookRDR no estaba disponible al inicio; el pump de script no fue registrado." << std::endl;
+        std::cout
+            << "[ScriptBridge] ScriptMain todavía no ha iniciado; "
+               "ScriptBridge esperará a que ScriptHookRDR termine su inicialización."
+            << std::endl;
     }
 
     // 3. Inicializar subsistemas del cliente
@@ -148,17 +153,16 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // ScriptHookRDR puede aparecer unos instantes después de nuestra DLL.
-        // Reintentamos registrar el script pump sin ejecutar ninguna native aquí.
+        // ScriptBridge carga ScriptHookRDR si hace falta y registra el script
+        // únicamente cuando ha pasado su ventana de inicialización.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
             (++scriptBridgeRetryTicks % 60) == 0) {
             Frontier::Core::ScriptBridge::registerScript(hModule);
         }
 
         // La ejecución de natives ocurre únicamente desde ScriptHookRDR's
-        // script thread. El hilo persistente solo mantiene red/UI y reintenta
-        // registrar el bridge; así evitamos llamar natives desde un hilo ajeno
-        // al scheduler de RAGE.
+        // script thread. Este hilo persistente solo mantiene red/UI y deja el
+        // registro al bridge para evitar natives fuera del scheduler de RAGE.
         if (!worldLoadFallbackLogged &&
             !Frontier::Core::ScriptBridge::isRegistered() &&
             Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
