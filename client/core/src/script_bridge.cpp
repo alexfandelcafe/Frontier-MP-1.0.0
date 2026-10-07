@@ -264,6 +264,38 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
         return;
     }
 
+    // Resolve the callback's wait primitive before registration. The scheduler
+    // may invoke ScriptMain as soon as the game resumes, before Frontier's
+    // worker thread has a chance to call initialize().
+    s_scriptWait = getExportByExactName<ScriptWaitFn>(
+        hookModule,
+        "?scriptWait@@YAXK@Z");
+
+    if (!s_scriptWait) {
+        s_scriptWait =
+            resolveMangledExport<ScriptWaitFn>(
+                hookModule,
+                "scriptWait");
+    }
+
+    const auto nativeInit =
+        getExportByExactName<ScriptNativeInitFn>(
+            hookModule,
+            "?nativeInit@@YAX_K@Z");
+    const auto nativePush64 =
+        getExportByExactName<ScriptNativePush64Fn>(
+            hookModule,
+            "?nativePush64@@YAX_K@Z");
+    const auto nativeCall =
+        getExportByExactName<ScriptNativeCallFn>(
+            hookModule,
+            "?nativeCall@@YAPEA_KXZ");
+
+    NativeInvoker::setScriptHookApi(
+        nativeInit,
+        nativePush64,
+        nativeCall);
+
     if (s_registered.load(std::memory_order_acquire) ||
         s_registrationRequested.exchange(true, std::memory_order_acq_rel)) {
         return;
@@ -273,6 +305,11 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
     // DLL_PROCESS_ATTACH. The launcher therefore loads ScriptHookRDR first,
     // then Frontier calls this before its worker thread starts.
     registerFn(module, &ScriptBridge::scriptMain);
+
+    std::cout
+        << "[ScriptBridge] FrontierMP registrado durante DLL_PROCESS_ATTACH; "
+           "scriptWait/natives resueltos antes del callback."
+        << std::endl;
 }
 
 void ScriptBridge::initialize(HMODULE module) {
