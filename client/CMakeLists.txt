@@ -36,6 +36,7 @@ add_library(frontier_core SHARED
     core/src/engine_hooks.cpp
     core/src/pattern_scanner.cpp
     core/src/native_invoker.cpp
+    core/src/script_bridge.cpp
     core/src/player_factory.cpp
     net/src/client_net.cpp
     ui/src/cef_manager.cpp
