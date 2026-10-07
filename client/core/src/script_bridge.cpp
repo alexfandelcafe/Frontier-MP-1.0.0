@@ -2,6 +2,7 @@
 #include "core/engine_hooks.hpp"
 #include "core/native_invoker.hpp"
 
+#include <MinHook.h>
 #include <windows.h>
 
 #include <atomic>
@@ -19,21 +20,24 @@ using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
 using ScriptManagerMaintenanceFn = void (*)();
 using ScriptStartByIdFn = void (*)(uint32_t);
+using ScriptHookRunDetourFn = uint64_t (*)(uintptr_t, uintptr_t);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
+ScriptManagerMaintenanceFn s_scriptManagerMaintenance = nullptr;
+ScriptStartByIdFn s_scriptStartById = nullptr;
+ScriptHookRunDetourFn s_originalScriptHookRunDetour = nullptr;
 
 // ScriptHookRDR 1.5.2 internal scheduler entry points.
 // These RVAs come from the supplied 1.5.2 binary decompilation:
-//   FUN_180031970 -> ScriptManager::prepare/start registered script fibers
-//   FUN_180031a20 -> enter a registered script fiber by Script ID
+//   FUN_180023540 -> ScriptHook's rage::scrThread::Run detour.
+//   FUN_180031970 -> ScriptManager::prepare/start registered script fibers.
+//   FUN_180031a20 -> enter a registered script fiber by Script ID.
+//   DAT_18020e0a0 -> ScriptManager object.
+constexpr uintptr_t kScriptHookRunDetourRva = 0x23540;
 constexpr uintptr_t kScriptManagerRva = 0x20e0a0;
-constexpr uintptr_t kRunEnteredFlagRva = 0x20e3f8;
 constexpr uintptr_t kScriptManagerMaintenanceRva = 0x31970;
 constexpr uintptr_t kScriptStartByIdRva = 0x31a20;
-
-ScriptManagerMaintenanceFn s_scriptManagerMaintenance = nullptr;
-ScriptStartByIdFn s_scriptStartById = nullptr;
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -124,12 +128,6 @@ bool readScriptHookValue(HMODULE module, uintptr_t rva, T& value) {
 
 bool readScriptHookGlobal(HMODULE module, uintptr_t rva, uintptr_t& value) {
     return readScriptHookValue(module, rva, value) && value != 0;
-}
-
-bool hasScriptHookRunEntered(HMODULE hookModule) {
-    uint8_t entered = 0;
-    return readScriptHookValue(hookModule, kRunEnteredFlagRva, entered) &&
-           entered != 0;
 }
 
 struct RegisteredScriptState {
@@ -225,54 +223,6 @@ bool isScriptHookRunSchedulerReady(HMODULE hookModule) {
            readScriptHookGlobal(hookModule, 0x20e3f0, originalRun);
 }
 
-bool initializeInternalSchedulerApi(HMODULE hookModule) {
-    if (!hookModule) {
-        return false;
-    }
-
-    if (!s_scriptManagerMaintenance) {
-        s_scriptManagerMaintenance =
-            reinterpret_cast<ScriptManagerMaintenanceFn>(
-                reinterpret_cast<uintptr_t>(hookModule) +
-                kScriptManagerMaintenanceRva);
-    }
-
-    if (!s_scriptStartById) {
-        s_scriptStartById =
-            reinterpret_cast<ScriptStartByIdFn>(
-                reinterpret_cast<uintptr_t>(hookModule) +
-                kScriptStartByIdRva);
-    }
-
-    return s_scriptManagerMaintenance && s_scriptStartById;
-}
-
-bool callScriptManagerMaintenance() {
-    if (!s_scriptManagerMaintenance) {
-        return false;
-    }
-
-    __try {
-        s_scriptManagerMaintenance();
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool callScriptStartById(uint32_t scriptId) {
-    if (!s_scriptStartById || scriptId == 0) {
-        return false;
-    }
-
-    __try {
-        s_scriptStartById(scriptId);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
 
@@ -331,11 +281,200 @@ void resolveScriptHook(HMODULE frontierModule) {
 } // namespace
 
 void ScriptBridge::registerScriptEarly(HMODULE module) {
-    // Registration is deliberately deferred. ScriptHookRDR starts a worker
-    // from its own DLL_PROCESS_ATTACH and installs its RAGE scheduler hooks
-    // asynchronously, so registering before Run is hooked can leave the
-    // request stranded until the next loader event.
+    // Never enter ScriptHookRDR from DllMain. Its own worker initializes
+    // asynchronously, and MinHook is initialized by EngineHooks.
     (void)module;
+}
+
+bool ScriptBridge::installRunInterceptor(HMODULE hookModule) {
+    if (!hookModule) {
+        return false;
+    }
+
+    if (s_runInterceptorInstalled.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    const auto target = reinterpret_cast<LPVOID>(
+        reinterpret_cast<uintptr_t>(hookModule) + kScriptHookRunDetourRva);
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(target, &mbi, sizeof(mbi)) != sizeof(mbi) ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_GUARD) ||
+        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+        return false;
+    }
+
+    const MH_STATUS createStatus = MH_CreateHook(
+        target,
+        reinterpret_cast<LPVOID>(&ScriptBridge::hookedScriptHookRun),
+        reinterpret_cast<LPVOID*>(&s_originalScriptHookRunDetour));
+
+    if (createStatus != MH_OK &&
+        createStatus != MH_ERROR_ALREADY_CREATED) {
+        if (!s_runInterceptorFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] No se pudo interceptar FUN_180023540 "
+                   "(rage::scrThread::Run) de ScriptHookRDR. MH_STATUS="
+                << static_cast<int>(createStatus)
+                << std::endl;
+        }
+        return false;
+    }
+
+    // With our own target this is normally MH_OK. If MinHook reports that
+    // the hook already exists, the saved trampoline must still be usable.
+    if (!s_originalScriptHookRunDetour) {
+        if (!s_runInterceptorFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] FUN_180023540 ya tenía un hook y no "
+                   "se obtuvo su trampoline."
+                << std::endl;
+        }
+        return false;
+    }
+
+    const MH_STATUS enableStatus = MH_EnableHook(target);
+    if (enableStatus != MH_OK &&
+        enableStatus != MH_ERROR_ENABLED) {
+        if (!s_runInterceptorFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] No se pudo activar el interceptor de "
+                   "rage::scrThread::Run. MH_STATUS="
+                << static_cast<int>(enableStatus)
+                << std::endl;
+        }
+        return false;
+    }
+
+    s_runInterceptorInstalled.store(true, std::memory_order_release);
+
+    std::cout
+        << "[ScriptBridge] Interceptor ScriptHookRDR 1.5.2 instalado sobre "
+           "FUN_180023540 (rage::scrThread::Run)."
+        << std::endl;
+
+    return true;
+}
+
+uint64_t ScriptBridge::hookedScriptHookRun(
+    uintptr_t scriptThread,
+    uintptr_t param2) {
+
+    const uint64_t result =
+        s_originalScriptHookRunDetour
+        ? s_originalScriptHookRunDetour(scriptThread, param2)
+        : 0;
+
+    // The callback runs on the actual RAGE script thread, after ScriptHook's
+    // own Run detour has finished. This is the safe context for FiberData,
+    // ScriptHook TLS and nativeInit/nativePush64/nativeCall.
+    if (!s_registrationRequested.load(std::memory_order_acquire) ||
+        s_registered.load(std::memory_order_acquire)) {
+        return result;
+    }
+
+    const HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
+    if (hookModule) {
+        pumpRegisteredScript(
+            reinterpret_cast<uintptr_t>(hookModule));
+    }
+
+    return result;
+}
+
+void ScriptBridge::pumpRegisteredScript(uintptr_t hookModuleBase) {
+    if (!hookModuleBase) {
+        return;
+    }
+
+    if (!s_scriptManagerMaintenance) {
+        s_scriptManagerMaintenance =
+            reinterpret_cast<ScriptManagerMaintenanceFn>(
+                hookModuleBase + kScriptManagerMaintenanceRva);
+    }
+
+    if (!s_scriptStartById) {
+        s_scriptStartById =
+            reinterpret_cast<ScriptStartByIdFn>(
+                hookModuleBase + kScriptStartByIdRva);
+    }
+
+    const HMODULE hookModule =
+        reinterpret_cast<HMODULE>(hookModuleBase);
+
+    RegisteredScriptState state{};
+    if (!readRegisteredScriptState(hookModule, state) ||
+        state.recordCount == 0) {
+        return;
+    }
+
+    // ScriptHookRDR's first Run can happen before Frontier registers. In that
+    // case DAT_18020e3f8 is already set and the normal Run state machine may
+    // skip the manager's fiber creation path. Re-run FUN_180031970 here on the
+    // correct RAGE thread until Frontier has both a Script ID and fiber.
+    for (int pass = 0;
+         pass < 3 &&
+         (state.scriptId == 0 || state.scriptFiber == 0);
+         ++pass) {
+
+        if (!s_scriptManagerMaintenance) {
+            return;
+        }
+
+        __try {
+            s_scriptManagerMaintenance();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            if (!s_fiberPreparationFailureLogged.exchange(
+                    true, std::memory_order_acq_rel)) {
+                std::cerr
+                    << "[ScriptBridge] Excepción al preparar el fiber "
+                       "Frontier mediante ScriptHookRDR 1.5.2."
+                    << std::endl;
+            }
+            return;
+        }
+
+        if (!readRegisteredScriptState(hookModule, state)) {
+            return;
+        }
+    }
+
+    if (state.scriptId == 0 || state.scriptFiber == 0) {
+        return;
+    }
+
+    if (!s_scriptPreparationLogged.exchange(
+            true, std::memory_order_acq_rel)) {
+        std::cout
+            << "[ScriptBridge] ScriptHookRDR preparó el script Frontier: "
+               "ScriptId="
+            << state.scriptId
+            << " fiber=0x" << std::hex << state.scriptFiber
+            << std::dec
+            << ". Iniciando desde el contexto de rage::scrThread::Run."
+            << std::endl;
+    }
+
+    if (!s_scriptStartById) {
+        return;
+    }
+
+    __try {
+        s_scriptStartById(state.scriptId);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (!s_scriptStartFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] Excepción al entrar en el fiber Frontier "
+                   "mediante FUN_180031a20."
+                << std::endl;
+        }
+    }
 }
 
 void ScriptBridge::update(HMODULE module) {
@@ -343,59 +482,25 @@ void ScriptBridge::update(HMODULE module) {
         return;
     }
 
-    tryRegister(module);
+    resolveScriptHook(module);
 
-    const HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule || !s_registrationRequested.load(std::memory_order_acquire)) {
+    const HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+
+    if (!hookModule) {
         return;
     }
 
-    // Once ScriptMain has started through the normal ScriptHook path, do not
-    // drive the same fiber from Frontier.
-    if (!s_fallbackActive.load(std::memory_order_acquire)) {
-        if (s_registered.load(std::memory_order_acquire)) {
-            return;
-        }
-
-        const uint32_t ticks =
-            s_fallbackPollTicks.fetch_add(1, std::memory_order_acq_rel) + 1;
-
-        // Give the real rage::scrThread::Run hook time to encounter a RAGE
-        // script thread. The fallback is only for the frontend/title path
-        // where Run may not fire at all.
-        if (ticks < 120) {
-            return;
-        }
-
-        if (hasScriptHookRunEntered(hookModule)) {
-            if (!s_fallbackPreparedLogged.exchange(
-                    true,
-                    std::memory_order_acq_rel)) {
-                std::cout
-                    << "[ScriptBridge] rage::scrThread::Run ya comenzó a "
-                       "ejecutarse; se desactiva el fallback de scheduler."
-                    << std::endl;
-            }
-            return;
-        }
-
-        if (prepareFallbackScript(hookModule)) {
-            s_fallbackActive.store(true, std::memory_order_release);
-        }
+    // EngineHooks initializes MinHook before the bridge runs. Waiting for
+    // ScriptHook's own Run hook prevents us from intercepting an incomplete
+    // module.
+    if (!isScriptHookRunSchedulerReady(hookModule)) {
+        tryRegister(module);
+        return;
     }
 
-    if (s_fallbackActive.load(std::memory_order_acquire)) {
-        if (hasScriptHookRunEntered(hookModule)) {
-            s_fallbackActive.store(false, std::memory_order_release);
-            std::cout
-                << "[ScriptBridge] ScriptHookRDR comenzó a ejecutar Run; "
-                   "cediendo el fiber al scheduler normal."
-                << std::endl;
-            return;
-        }
-
-        pumpRegisteredScript(hookModule);
-    }
+    installRunInterceptor(hookModule);
+    tryRegister(module);
 }
 
 void ScriptBridge::tryRegister(HMODULE module) {
@@ -419,8 +524,7 @@ void ScriptBridge::tryRegister(HMODULE module) {
     if (!isScriptHookRunSchedulerReady(hookModule)) {
         static std::atomic<bool> schedulerWaitLogged{false};
         if (!schedulerWaitLogged.exchange(
-                true,
-                std::memory_order_acq_rel)) {
+                true, std::memory_order_acq_rel)) {
             std::cout
                 << "[ScriptBridge] ScriptHookRDR está cargado; esperando que "
                    "termine de instalar rage::scrThread::Run antes de registrar."
@@ -430,8 +534,7 @@ void ScriptBridge::tryRegister(HMODULE module) {
     }
 
     if (!s_schedulerReadyLogged.exchange(
-            true,
-            std::memory_order_acq_rel)) {
+            true, std::memory_order_acq_rel)) {
         uintptr_t runTarget = 0;
         uintptr_t originalRun = 0;
         readScriptHookGlobal(hookModule, 0x20e4a8, runTarget);
@@ -444,17 +547,23 @@ void ScriptBridge::tryRegister(HMODULE module) {
             << std::dec << std::endl;
     }
 
+    // Install our interceptor before registering the script. If RDR reaches
+    // Run immediately after this call, we must already be in the path that
+    // can recover a late registration.
+    if (!installRunInterceptor(hookModule)) {
+        return;
+    }
+
     if (s_registrationRequested.exchange(
-            true,
-            std::memory_order_acq_rel)) {
+            true, std::memory_order_acq_rel)) {
         return;
     }
 
     s_scriptRegister(module, &ScriptBridge::scriptMain);
 
     std::cout
-        << "[ScriptBridge] scriptRegister enviado después de que ScriptHookRDR "
-           "instaló rage::scrThread::Run."
+        << "[ScriptBridge] scriptRegister enviado después de instalar el "
+           "interceptor de rage::scrThread::Run."
         << std::endl;
 }
 
@@ -462,14 +571,16 @@ void ScriptBridge::initialize(HMODULE module) {
     resolveScriptHook(module);
     tryRegister(module);
 
-    if (!GetModuleHandleA("ScriptHookRDR.dll")) {
+    const HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+
+    if (!hookModule) {
         return;
     }
 
     if (!s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
-                true,
-                std::memory_order_acq_rel)) {
+                true, std::memory_order_acq_rel)) {
             std::cerr
                 << "[ScriptBridge] ScriptHookRDR está cargado, pero scriptWait "
                    "no pudo resolverse."
@@ -485,8 +596,7 @@ bool ScriptBridge::isRegistered() {
 void __cdecl ScriptBridge::scriptMain() {
     bool expected = false;
     if (!s_registered.compare_exchange_strong(
-            expected,
-            true,
+            expected, true,
             std::memory_order_acq_rel,
             std::memory_order_acquire)) {
         return;
@@ -503,101 +613,6 @@ void __cdecl ScriptBridge::scriptMain() {
             s_scriptWait(0);
         } else {
             return;
-        }
-    }
-}
-
-bool ScriptBridge::prepareFallbackScript(HMODULE hookModule) {
-    if (!initializeInternalSchedulerApi(hookModule)) {
-        return false;
-    }
-
-    RegisteredScriptState state{};
-    if (!readRegisteredScriptState(hookModule, state)) {
-        return false;
-    }
-
-    if (state.recordCount == 0) {
-        static std::atomic<bool> noRecordLogged{false};
-        if (!noRecordLogged.exchange(true, std::memory_order_acq_rel)) {
-            std::cerr
-                << "[ScriptBridge] Fallback: ScriptHookRDR no muestra ningún "
-                   "registro en ScriptManager después de scriptRegister."
-                << std::endl;
-        }
-        return false;
-    }
-
-    // FUN_180031970 assigns the Script ID on its first pass and creates the
-    // actual fiber on the next pass. Calling it only as needed mirrors the
-    // state machine in ScriptHookRDR 1.5.2.
-    for (int pass = 0; pass < 3; ++pass) {
-        if (!readRegisteredScriptState(hookModule, state)) {
-            return false;
-        }
-
-        if (state.scriptId != 0 && state.scriptFiber != 0) {
-            break;
-        }
-
-        if (!callScriptManagerMaintenance()) {
-            std::cerr
-                << "[ScriptBridge] Fallback: FUN_180031970 falló durante la "
-                   "preparación del script fiber."
-                << std::endl;
-            return false;
-        }
-    }
-
-    if (!readRegisteredScriptState(hookModule, state) ||
-        state.scriptId == 0 ||
-        state.scriptFiber == 0) {
-        static std::atomic<bool> fiberNotReadyLogged{false};
-        if (!fiberNotReadyLogged.exchange(
-                true,
-                std::memory_order_acq_rel)) {
-            std::cerr
-                << "[ScriptBridge] Fallback: registro encontrado, pero "
-                   "ScriptHookRDR todavía no creó su fiber."
-                << std::endl;
-        }
-        return false;
-    }
-
-    s_fallbackScriptId.store(state.scriptId, std::memory_order_release);
-
-    if (!s_fallbackPreparedLogged.exchange(
-            true,
-            std::memory_order_acq_rel)) {
-        std::cout
-            << "[ScriptBridge] Fallback de scheduler preparado: ScriptId="
-            << state.scriptId
-            << " fiber=0x" << std::hex << state.scriptFiber
-            << std::dec
-            << ". Se usará la entrada interna de ScriptHookRDR 1.5.2."
-            << std::endl;
-    }
-
-    return true;
-}
-
-void ScriptBridge::pumpRegisteredScript(HMODULE hookModule) {
-    (void)hookModule;
-
-    const uint32_t scriptId =
-        s_fallbackScriptId.load(std::memory_order_acquire);
-    if (!scriptId || !s_scriptWait) {
-        return;
-    }
-
-    if (!callScriptStartById(scriptId) &&
-        !s_registered.load(std::memory_order_acquire)) {
-        static std::atomic<bool> pumpFailureLogged{false};
-        if (!pumpFailureLogged.exchange(true, std::memory_order_acq_rel)) {
-            std::cerr
-                << "[ScriptBridge] Fallback: no se pudo entrar al fiber "
-                   "registrado mediante FUN_180031a20."
-                << std::endl;
         }
     }
 }
