@@ -16,12 +16,14 @@ namespace Frontier::Core {
 namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
+using ScriptRegisterAdditionalThreadFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
+ScriptRegisterAdditionalThreadFn s_scriptRegisterAdditionalThread = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 std::atomic<bool> s_exportsDumped{false};
-std::atomic<bool> s_registrationRequested{false};
+std::atomic<uint64_t> s_registrationRequestedAt{0};
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -216,6 +218,18 @@ void resolveScriptHook(HMODULE frontierModule) {
                 "scriptRegister");
     }
 
+    s_scriptRegisterAdditionalThread =
+        getExportByExactName<ScriptRegisterAdditionalThreadFn>(
+            hookModule,
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread =
+            resolveMangledExport<ScriptRegisterAdditionalThreadFn>(
+                hookModule,
+                "scriptRegisterAdditionalThread");
+    }
+
     s_scriptWait = getExportByExactName<ScriptWaitFn>(
         hookModule,
         "?scriptWait@@YAXK@Z");
@@ -251,6 +265,9 @@ void resolveScriptHook(HMODULE frontierModule) {
 } // namespace
 
 void ScriptBridge::registerScriptEarly(HMODULE module) {
+    // Fast path for the normal SDK lifecycle: if ScriptHook is already loaded
+    // when Frontier attaches, register immediately. No logging, filesystem I/O,
+    // or native initialization is performed here.
     HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
     if (!hookModule || !module) {
         return;
@@ -264,37 +281,93 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
         return;
     }
 
-    // Resolve only the wait primitive here. Do not perform console/file I/O or
-    // native API initialization from DllMain: ScriptHook and the Windows loader
-    // are still under loader lock at this point.
+    registerFn(module, &ScriptBridge::scriptMain);
+    s_registrationRequestedAt.store(GetTickCount64(), std::memory_order_release);
+}
+
+void ScriptBridge::tryRegister(HMODULE module) {
+    if (!module || s_registered.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule) {
+        return;
+    }
+
+    // Resolve the registration functions only after leaving DLL_PROCESS_ATTACH.
+    s_scriptRegister = getExportByExactName<ScriptRegisterFn>(
+        hookModule,
+        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+    if (!s_scriptRegister) {
+        s_scriptRegister =
+            resolveMangledExport<ScriptRegisterFn>(hookModule, "scriptRegister");
+    }
+
+    s_scriptRegisterAdditionalThread =
+        getExportByExactName<ScriptRegisterAdditionalThreadFn>(
+            hookModule,
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+    if (!s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread =
+            resolveMangledExport<ScriptRegisterAdditionalThreadFn>(
+                hookModule,
+                "scriptRegisterAdditionalThread");
+    }
+
     s_scriptWait = getExportByExactName<ScriptWaitFn>(
         hookModule,
         "?scriptWait@@YAXK@Z");
-
     if (!s_scriptWait) {
         s_scriptWait =
-            resolveMangledExport<ScriptWaitFn>(
-                hookModule,
-                "scriptWait");
+            resolveMangledExport<ScriptWaitFn>(hookModule, "scriptWait");
     }
 
-    if (!s_scriptWait) {
+    if (!s_scriptRegister) {
         return;
     }
 
-    if (s_registered.load(std::memory_order_acquire) ||
-        s_registrationRequested.exchange(true, std::memory_order_acq_rel)) {
+    const uint64_t now = GetTickCount64();
+    const uint64_t requestedAt =
+        s_registrationRequestedAt.load(std::memory_order_acquire);
+
+    // First attempt happens once, as soon as ScriptHook's module exists. This
+    // mirrors the ASI lifecycle without requiring the game installation.
+    if (requestedAt == 0) {
+        s_scriptRegister(module, &ScriptBridge::scriptMain);
+        s_registrationRequestedAt.store(now, std::memory_order_release);
+        std::cout
+            << "[ScriptBridge] scriptRegister enviado en cuanto ScriptHookRDR "
+               "apareció en el proceso."
+            << std::endl;
         return;
     }
 
-    // ScriptHookRDR's SDK expects script registration from the mod's
-    // DLL_PROCESS_ATTACH. The launcher loads ScriptHookRDR first so the export
-    // is already available when Frontier is attached.
-    registerFn(module, &ScriptBridge::scriptMain);
+    // If the regular registration was not materialized into a script stack
+    // after a few seconds, use the dedicated additional-thread API once. The
+    // callback itself protects against executing two copies of our script.
+    if (!s_additionalThreadRegistrationAttempted.load(std::memory_order_acquire) &&
+        now >= requestedAt + 3000 &&
+        s_scriptRegisterAdditionalThread) {
+
+        bool expected = false;
+        if (s_additionalThreadRegistrationAttempted.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            s_scriptRegisterAdditionalThread(module, &ScriptBridge::scriptMain);
+            std::cout
+                << "[ScriptBridge] scriptRegisterAdditionalThread enviado como "
+                   "fallback después de 3 segundos."
+                << std::endl;
+        }
+    }
 }
 
 void ScriptBridge::initialize(HMODULE module) {
     resolveScriptHook(module);
+    tryRegister(module);
 
     if (!s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
@@ -305,13 +378,7 @@ void ScriptBridge::initialize(HMODULE module) {
                    "no pudo resolverse."
                 << std::endl;
         }
-        return;
     }
-
-    std::cout
-        << "[ScriptBridge] Registro de FrontierMP ya fue enviado desde "
-           "DLL_PROCESS_ATTACH; esperando al scheduler de ScriptHookRDR."
-        << std::endl;
 }
 
 bool ScriptBridge::isRegistered() {
@@ -319,7 +386,17 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
-    s_registered.store(true, std::memory_order_release);
+    bool expected = false;
+    if (!s_registered.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        // A second registration can exist transiently if the regular API was
+        // followed by the additional-thread fallback. Do not run our game loop
+        // twice.
+        return;
+    }
 
     std::cout
         << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
