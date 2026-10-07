@@ -3,7 +3,6 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <cstring>
 
 namespace Frontier::Core {
 
@@ -80,25 +79,6 @@ int sehScriptNativeCall(
     }
 }
 
-void* sehGetCommand(
-    ScriptGetCommandFn getCommandFromHash,
-    uint64_t hash,
-    DWORD* outExceptionCode)
-{
-    if (outExceptionCode) {
-        *outExceptionCode = 0;
-    }
-
-    __try {
-        return getCommandFromHash ? getCommandFromHash(hash) : nullptr;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (outExceptionCode) {
-            *outExceptionCode = GetExceptionCode();
-        }
-        return nullptr;
-    }
-}
 
 template <typename T>
 T resolveMangledExport(HMODULE module, const char* token) {
@@ -158,12 +138,11 @@ void NativeInvoker::setScriptHookApi(
     ScriptNativeInitFn nativeInit,
     ScriptNativePush64Fn nativePush64,
     ScriptNativeCallFn nativeCall,
-    ScriptGetCommandFn getCommandFromHash)
+    ScriptNativeCallFn nativeCall)
 {
     s_nativeInit = nativeInit;
     s_nativePush64 = nativePush64;
     s_nativeCall = nativeCall;
-    s_getCommandFromHash = getCommandFromHash;
 
     const bool ready = s_nativeInit != nullptr &&
                        s_nativePush64 != nullptr &&
@@ -175,8 +154,7 @@ void NativeInvoker::setScriptHookApi(
          << (ready ? "lista." : "incompleta.")
          << " nativeInit=" << hexValue(reinterpret_cast<uintptr_t>(s_nativeInit))
          << " nativePush64=" << hexValue(reinterpret_cast<uintptr_t>(s_nativePush64))
-         << " nativeCall=" << hexValue(reinterpret_cast<uintptr_t>(s_nativeCall))
-         << " getCommandFromHash=" << hexValue(reinterpret_cast<uintptr_t>(s_getCommandFromHash));
+         << " nativeCall=" << hexValue(reinterpret_cast<uintptr_t>(s_nativeCall));
     std::cout << line.str() << std::endl;
     appendNativeLog(line.str());
 }
@@ -204,10 +182,7 @@ bool NativeInvoker::initialize() {
         hookModule, "nativePush64");
     const auto nativeCall = resolveMangledExport<ScriptNativeCallFn>(
         hookModule, "nativeCall");
-    const auto getCommandFromHash = resolveMangledExport<ScriptGetCommandFn>(
-        hookModule, "getCommandFromHash");
-
-    setScriptHookApi(nativeInit, nativePush64, nativeCall, getCommandFromHash);
+    setScriptHookApi(nativeInit, nativePush64, nativeCall);
 
     if (!s_scriptHookApiReady.load(std::memory_order_acquire)) {
         static bool loggedUnavailable = false;
@@ -224,16 +199,8 @@ bool NativeInvoker::initialize() {
     return true;
 }
 
-void NativeInvoker::init(uintptr_t getCommandAddress) {
-    if (!getCommandAddress) {
-        return;
-    }
-
-    setScriptHookApi(
-        nullptr,
-        nullptr,
-        nullptr,
-        reinterpret_cast<ScriptGetCommandFn>(getCommandAddress));
+void NativeInvoker::init(uintptr_t) {
+    initialize();
 }
 
 void NativeInvoker::beginCall() {
@@ -280,29 +247,6 @@ void NativeInvoker::endCall(uint32_t hash) {
     std::cout << line.str() << std::endl;
 }
 
-void* NativeInvoker::findNative(uint32_t hash) {
-    if (!s_getCommandFromHash ||
-        s_faulted.load(std::memory_order_acquire)) {
-        return nullptr;
-    }
-
-    DWORD exceptionCode = 0;
-    void* handler = sehGetCommand(
-        s_getCommandFromHash,
-        static_cast<uint64_t>(hash),
-        &exceptionCode);
-
-    if (exceptionCode != 0) {
-        std::ostringstream line;
-        line << "[NativeInvoker] Excepción en getCommandFromHash"
-             << " | code=0x" << std::hex << exceptionCode
-             << " | hash=" << hexValue(hash);
-        appendNativeLog(line.str());
-        std::cerr << line.str() << std::endl;
-        return nullptr;
-    }
-
-    return handler;
 }
 
 } // namespace Frontier::Core
