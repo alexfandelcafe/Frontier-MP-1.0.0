@@ -144,6 +144,8 @@ No cambiar estos hashes sin evidencia adicional. Una búsqueda histórica extern
 No se puede ejecutar aquí el build de Visual Studio/Windows ni comprobar el launcher en la PC del usuario. La validación final requiere que el usuario configure/compile y ejecute el launcher en Windows.
 
 ## Últimos commits de contexto
+- ff4c543103a98697548146946f004ffe1be7d170 — Fix null character literal in PowerShell quoting
+- 66b09e9277f7f8632709ca692e239ccff3b1a7eb — Fix malformed character literal in PowerShell quoting
 - ef275bc4acd87746a73f400a7894d0e280f8f7ee — Fix client ScriptHook bridge formatting
 - 3913f3ed32d8a16037dd6532f079e49e0c9a1ce6 — Use WinHTTP for Frontier dependency downloads
 - a99fdff48f3908316626b8f4bd756f0c5940b064 — Fix client bootstrap header formatting
