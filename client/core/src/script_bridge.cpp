@@ -10,6 +10,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <fstream>
+#include <filesystem>
 
 namespace Frontier::Core {
 
@@ -23,9 +25,65 @@ ScriptWaitFn s_scriptWait = nullptr;
 std::atomic<bool> s_exportsDumped{false};
 std::atomic<bool> s_registrationRequested{false};
 std::atomic<bool> s_registrationDelayLogged{false};
-std::atomic<uint64_t> s_scriptHookObservedTick{0};
+std::atomic<bool> s_scriptHookReadyLogged{false};
+std::atomic<uintmax_t> s_scriptHookLogBaselineSize{0};
+std::atomic<bool> s_scriptHookLogBaselineCaptured{false};
 
-constexpr uint64_t kScriptHookStartupDelayMs = 12000;
+bool isScriptHookInitializationComplete() {
+    char gamePath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, gamePath, MAX_PATH)) {
+        return false;
+    }
+
+    std::filesystem::path logPath(gamePath);
+    logPath = logPath.parent_path() / "ScriptHookRDR.log";
+
+    std::error_code ec;
+    if (!std::filesystem::exists(logPath, ec)) {
+        return false;
+    }
+
+    const uintmax_t currentSize = std::filesystem::file_size(logPath, ec);
+    if (ec) {
+        return false;
+    }
+
+    if (!s_scriptHookLogBaselineCaptured.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    const uintmax_t baseline =
+        s_scriptHookLogBaselineSize.load(std::memory_order_acquire);
+
+    // ScriptHook rewrites/appends this log during the current startup. Do not
+    // accept stale "Finished hooking functions" text from an older run.
+    if (currentSize <= baseline) {
+        return false;
+    }
+
+    std::ifstream log(logPath, std::ios::binary);
+    if (!log.is_open()) {
+        return false;
+    }
+
+    std::string contents(
+        (std::istreambuf_iterator<char>(log)),
+        std::istreambuf_iterator<char>());
+
+    const size_t initPos =
+        contents.rfind("[INIT] Initializing ScriptHook for Red Dead Redemption");
+    const size_t finishPos =
+        contents.rfind("[INIT] Finished hooking functions");
+
+    if (initPos == std::string::npos ||
+        finishPos == std::string::npos ||
+        finishPos <= initPos) {
+        return false;
+    }
+
+    // The current initialization sequence must extend beyond the baseline.
+    return finishPos >= baseline;
+}
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -175,9 +233,22 @@ HMODULE ensureScriptHookLoaded(HMODULE frontierModule) {
                 LOAD_WITH_ALTERED_SEARCH_PATH);
 
             if (hookModule) {
-                s_scriptHookObservedTick.store(
-                    GetTickCount64(),
-                    std::memory_order_release);
+                char gamePath[MAX_PATH] = {};
+                if (GetModuleFileNameA(nullptr, gamePath, MAX_PATH)) {
+                    std::filesystem::path logPath(gamePath);
+                    logPath = logPath.parent_path() / "ScriptHookRDR.log";
+                    std::error_code ec;
+                    const uintmax_t baseline =
+                        std::filesystem::exists(logPath, ec)
+                            ? std::filesystem::file_size(logPath, ec)
+                            : 0;
+                    s_scriptHookLogBaselineSize.store(
+                        ec ? 0 : baseline,
+                        std::memory_order_release);
+                    s_scriptHookLogBaselineCaptured.store(
+                        true,
+                        std::memory_order_release);
+                }
                 std::cout
                     << "[ScriptBridge] ScriptHookRDR.dll cargado desde Frontier: "
                     << modulePath << std::endl;
@@ -281,26 +352,25 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    const uint64_t now = GetTickCount64();
-    const uint64_t hookLoadedAt =
-        s_scriptHookObservedTick.load(std::memory_order_acquire);
-
-    if (hookLoadedAt == 0) {
-        s_scriptHookObservedTick.store(now, std::memory_order_release);
-        return;
-    }
-
-    if (now - hookLoadedAt < kScriptHookStartupDelayMs) {
+    if (!isScriptHookInitializationComplete()) {
         if (!s_registrationDelayLogged.exchange(
                 true,
                 std::memory_order_acq_rel)) {
             std::cout
-                << "[ScriptBridge] ScriptHookRDR detectado; esperando "
-                << kScriptHookStartupDelayMs
-                << " ms para que termine su inicialización interna antes de registrar FrontierMP."
+                << "[ScriptBridge] ScriptHookRDR cargado; esperando "
+                   ""[INIT] Finished hooking functions" antes de registrar FrontierMP."
                 << std::endl;
         }
         return;
+    }
+
+    if (!s_scriptHookReadyLogged.exchange(
+            true,
+            std::memory_order_acq_rel)) {
+        std::cout
+            << "[ScriptBridge] ScriptHookRDR terminó su inicialización de hooks; "
+               "registrando FrontierMP ahora."
+            << std::endl;
     }
 
     s_registrationRequested.store(true, std::memory_order_release);
