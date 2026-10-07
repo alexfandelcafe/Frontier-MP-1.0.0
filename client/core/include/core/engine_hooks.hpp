@@ -46,9 +46,6 @@ private:
     static inline bool s_blockSingleplayer{true};
     static inline bool s_worldCleaned{false};
     static inline bool s_d3dInitialized{false};
-    static inline std::atomic<bool> s_multiplayerWorldRequested{false};
-    static inline std::atomic<bool> s_multiplayerPreparationStarted{false};
-    static inline std::atomic<bool> s_multiplayerTransitionStarted{false};
 };
 
 } // namespace Frontier::Core
