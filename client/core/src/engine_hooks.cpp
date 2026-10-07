@@ -30,8 +30,12 @@ static Wait_t s_originalWait = nullptr;
 
 // No inicializar D3D11On12 mientras RDR/Streamline está creando y precompilando su pipeline.
 static std::atomic<uint32_t> s_stablePresentFrames{0};
+static std::atomic<uint32_t> s_swapChainCreateCount{0};
+static std::atomic<bool> s_overlayEligible{false};
 static IDXGISwapChain* s_pendingSwapChain = nullptr;
-static constexpr uint32_t kOverlayStartupDelayFrames = 300; // ~5 s a 60 FPS
+// No tocar la primera swap chain: en RDR1/Streamline corresponde a la fase de
+// inicialización/precompilación. Activamos el overlay sobre la cadena posterior.
+static constexpr uint32_t kOverlayStartupDelayFrames = 90; // ~1.5 s a 60 FPS
 static std::recursive_mutex s_graphicsMutex;
 static IDXGISwapChain* s_pLastSwapChain = nullptr;
 
@@ -89,6 +93,8 @@ void EngineHooks::shutdown() {
         s_pLastSwapChain = nullptr;
         s_pendingSwapChain = nullptr;
         s_stablePresentFrames.store(0, std::memory_order_release);
+        s_swapChainCreateCount.store(0, std::memory_order_release);
+        s_overlayEligible.store(false, std::memory_order_release);
 
         if (s_pCommandQueue) {
             s_pCommandQueue->Release();
@@ -312,21 +318,33 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChain(
         ? s_originalCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain)
         : E_FAIL;
 
-    if (SUCCEEDED(hr) && pDevice) {
-        ID3D12CommandQueue* newQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(
-                __uuidof(ID3D12CommandQueue),
-                reinterpret_cast<void**>(&newQueue)))) {
-            std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
-            if (s_pCommandQueue) {
-                s_pCommandQueue->Release();
-            }
-            s_pCommandQueue = newQueue;
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        const uint32_t count =
+            s_swapChainCreateCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+        if (count >= 2) {
+            s_overlayEligible.store(true, std::memory_order_release);
+            s_pendingSwapChain = *ppSwapChain;
+            s_stablePresentFrames.store(0, std::memory_order_release);
         }
+
+        if (pDevice) {
+            ID3D12CommandQueue* newQueue = nullptr;
+            if (SUCCEEDED(pDevice->QueryInterface(
+                    __uuidof(ID3D12CommandQueue),
+                    reinterpret_cast<void**>(&newQueue)))) {
+                std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+                if (s_pCommandQueue) {
+                    s_pCommandQueue->Release();
+                }
+                s_pCommandQueue = newQueue;
+            }
+        }
+
+        std::cout << "[EngineHooks] CreateSwapChain completado #"
+                  << count << ": 0x" << std::hex << hr << std::dec << std::endl;
     }
 
-    std::cout << "[EngineHooks] CreateSwapChain completado: 0x"
-              << std::hex << hr << std::dec << std::endl;
     return hr;
 }
 
@@ -351,21 +369,36 @@ HRESULT WINAPI EngineHooks::HookedCreateSwapChainForHwnd(
             pFullscreenDesc, pRestrictToOutput, ppSwapChain)
         : E_FAIL;
 
-    if (SUCCEEDED(hr) && pDevice) {
-        ID3D12CommandQueue* newQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(
-                __uuidof(ID3D12CommandQueue),
-                reinterpret_cast<void**>(&newQueue)))) {
-            std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
-            if (s_pCommandQueue) {
-                s_pCommandQueue->Release();
-            }
-            s_pCommandQueue = newQueue;
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        const uint32_t count =
+            s_swapChainCreateCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+        // Primera cadena: observamos solamente.
+        // Segunda y posteriores: pueden ser usadas por el overlay cuando estén estables.
+        if (count >= 2) {
+            s_overlayEligible.store(true, std::memory_order_release);
+            s_pendingSwapChain = *ppSwapChain;
+            s_stablePresentFrames.store(0, std::memory_order_release);
         }
+
+        // Capturar la command queue SOLAMENTE después de que DXGI haya terminado.
+        if (pDevice) {
+            ID3D12CommandQueue* newQueue = nullptr;
+            if (SUCCEEDED(pDevice->QueryInterface(
+                    __uuidof(ID3D12CommandQueue),
+                    reinterpret_cast<void**>(&newQueue)))) {
+                std::lock_guard<std::recursive_mutex> lock(s_graphicsMutex);
+                if (s_pCommandQueue) {
+                    s_pCommandQueue->Release();
+                }
+                s_pCommandQueue = newQueue;
+            }
+        }
+
+        std::cout << "[EngineHooks] CreateSwapChainForHwnd completado #"
+                  << count << ": 0x" << std::hex << hr << std::dec << std::endl;
     }
 
-    std::cout << "[EngineHooks] CreateSwapChainForHwnd completado: 0x"
-              << std::hex << hr << std::dec << std::endl;
     return hr;
 }
 
@@ -397,8 +430,15 @@ HRESULT WINAPI EngineHooks::HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncI
         UI::D3D11Renderer::get().shutdown();
         s_d3dInitialized = false;
         s_pLastSwapChain = pSwapChain;
-        s_pendingSwapChain = pSwapChain;
-        s_stablePresentFrames.store(0, std::memory_order_release);
+
+        // Una swap chain que aparece antes de la segunda creación sigue siendo parte
+        // de la inicialización del juego y no recibe el overlay.
+        if (s_overlayEligible.load(std::memory_order_acquire)) {
+            s_pendingSwapChain = pSwapChain;
+            s_stablePresentFrames.store(0, std::memory_order_release);
+        } else {
+            s_pendingSwapChain = nullptr;
+        }
     } else if (s_pendingSwapChain == pSwapChain) {
         uint32_t stable = s_stablePresentFrames.load(std::memory_order_relaxed);
         if (stable < kOverlayStartupDelayFrames) {
@@ -406,7 +446,8 @@ HRESULT WINAPI EngineHooks::HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncI
         }
     }
 
-    if (!s_d3dInitialized &&
+    if (s_overlayEligible.load(std::memory_order_acquire) &&
+        !s_d3dInitialized &&
         s_stablePresentFrames.load(std::memory_order_acquire) >= kOverlayStartupDelayFrames &&
         s_pCommandQueue != nullptr) {
         s_d3dInitialized =
