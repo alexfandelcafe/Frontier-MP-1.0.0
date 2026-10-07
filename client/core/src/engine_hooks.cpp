@@ -260,7 +260,26 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    if (NativeInvoker::isReady()) {
+    // NativeInvoker puede instalarse antes de que RAGE haya publicado
+    // sm_CommandsRegistration. Reintentamos la resolución desde el hilo de
+    // scripts, donde ya estamos dentro de un contexto válido del juego.
+    static std::atomic<uint32_t> s_waitHookCalls{0};
+    static std::atomic<bool> s_nativeReadyLogged{false};
+
+    const uint32_t waitCall = s_waitHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (!NativeInvoker::isReady()) {
+        NativeInvoker::initialize();
+    }
+
+    const bool nativeReady = NativeInvoker::isReady();
+
+    if (nativeReady && !s_nativeReadyLogged.exchange(true, std::memory_order_acq_rel)) {
+        std::cout << "[EngineHooks] NativeInvoker listo dentro de rage::scrThread::Wait." << std::endl;
+    } else if (!nativeReady && (waitCall % 120) == 0) {
+        std::cout << "[EngineHooks] rage::scrThread::Wait activo; NativeInvoker aún no está listo (reintentando)." << std::endl;
+    }
+
+    if (nativeReady) {
         const bool multiplayerWorldRequested =
             s_multiplayerWorldRequested.load(std::memory_order_acquire);
 
