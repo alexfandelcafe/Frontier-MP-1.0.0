@@ -369,6 +369,9 @@ HRESULT WINAPI EngineHooks::HookedResizeBuffers(IDXGISwapChain* pSwapChain, UINT
         ? s_originalResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags)
         : S_OK;
 
+    // El resize invalida no solo los wrapped resources sino también el estado del
+    // renderer asociado a la swap chain anterior. Fuerza una recreación completa.
+    UI::D3D11Renderer::get().shutdown();
     s_d3dInitialized = false;
     s_stablePresentFrames.store(0, std::memory_order_release);
     s_pendingSwapChain = pSwapChain;
