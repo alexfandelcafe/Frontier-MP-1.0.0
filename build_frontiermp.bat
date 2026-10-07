@@ -11,6 +11,49 @@ rem Use a clean out-of-source build directory so a copied repository never reuse
 rem a CMakeCache generated in another absolute path.
 set "BUILD_DIR=build_release"
 
+rem ----------------------------------------------------------
+rem Prepare MinHook. GitHub source archives do not include the
+rem contents of the MinHook submodule, only the submodule entry.
+rem ----------------------------------------------------------
+set "MINHOOK_DIR=vendor\minhook"
+if not exist "!MINHOOK_DIR!\src\buffer.c" (
+    echo.
+    echo [INFO] MinHook sources are missing. Preparing vendor\minhook...
+    echo [INFO] MinHook sources are missing. Preparing vendor\minhook... >> "!LOG!"
+
+    where git >nul 2>&1
+    if "!ERRORLEVEL!"=="0" (
+        echo [INFO] Git found. Cloning MinHook...
+        echo [INFO] Git found. Cloning MinHook... >> "!LOG!"
+        if exist "!MINHOOK_DIR!" rmdir /s /q "!MINHOOK_DIR!" >> "!LOG!" 2>&1
+        git clone --depth 1 https://github.com/TsudaKageyu/minhook.git "!MINHOOK_DIR!" >> "!LOG!" 2>&1
+        if not "!ERRORLEVEL!"=="0" (
+            echo [ERROR] Git could not clone MinHook.
+            echo [ERROR] Git could not clone MinHook. >> "!LOG!"
+            goto BUILD_ERROR
+        )
+    ) else (
+        echo [INFO] Git not found. Downloading MinHook ZIP with PowerShell...
+        echo [INFO] Git not found. Downloading MinHook ZIP with PowerShell... >> "!LOG!"
+        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+          "$ErrorActionPreference='Stop'; $zip=Join-Path $env:TEMP 'minhook-master.zip'; $root=Join-Path $env:TEMP 'minhook-master'; if(Test-Path $zip){Remove-Item $zip -Force}; if(Test-Path $root){Remove-Item $root -Recurse -Force}; Invoke-WebRequest -UseBasicParsing 'https://github.com/TsudaKageyu/minhook/archive/refs/heads/master.zip' -OutFile $zip; Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force; New-Item -ItemType Directory -Force -Path 'vendor' | Out-Null; if(Test-Path 'vendor\minhook'){Remove-Item 'vendor\minhook' -Recurse -Force}; Move-Item $root 'vendor\minhook'" >> "!LOG!" 2>&1
+        if not "!ERRORLEVEL!"=="0" (
+            echo [ERROR] PowerShell could not download MinHook.
+            echo [ERROR] PowerShell could not download MinHook. >> "!LOG!"
+            goto BUILD_ERROR
+        )
+    )
+)
+
+if not exist "!MINHOOK_DIR!\src\buffer.c" (
+    echo [ERROR] MinHook is still missing: !MINHOOK_DIR!\src\buffer.c
+    echo [ERROR] MinHook is still missing: !MINHOOK_DIR!\src\buffer.c >> "!LOG!"
+    goto BUILD_ERROR
+)
+
+echo [OK] MinHook sources are ready.
+echo [OK] MinHook sources are ready. >> "!LOG!"
+
 for /f "tokens=1-3 delims=/ " %%a in ('echo %date%') do (
     set "D1=%%a"
     set "D2=%%b"
@@ -108,5 +151,21 @@ echo -------------- END LOG --------------
 echo.
 echo The window will remain open.
 pause
+
+
+:BUILD_ERROR
+echo.
+echo ==========================================================
+echo [FAILED] Build preparation failed.
+echo [LOG] !LOG!
+echo ==========================================================
+echo.
+echo ---------------- LOG ----------------
+type "!LOG!"
+echo -------------- END LOG --------------
+echo.
+echo The window will remain open.
+pause
+exit /b 1
 
 exit /b !BUILD_EXIT!
