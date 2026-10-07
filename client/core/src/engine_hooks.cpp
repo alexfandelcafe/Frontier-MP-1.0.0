@@ -97,6 +97,7 @@ void EngineHooks::shutdown() {
         s_swapChainCreateCount.store(0, std::memory_order_release);
         s_overlayEligible.store(false, std::memory_order_release);
         s_multiplayerWorldRequested.store(false, std::memory_order_release);
+        s_multiplayerPreparationStarted.store(false, std::memory_order_release);
         s_multiplayerTransitionStarted.store(false, std::memory_order_release);
 
         if (s_pCommandQueue) {
@@ -262,10 +263,26 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
             (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0);
 
         if (isTransitionScript && s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
-            if (!s_multiplayerTransitionStarted.exchange(true, std::memory_order_acq_rel)) {
+            // Reproducir la primera parte de LoadOnline del cliente original:
+            // FUN_1800541b0() prepara el estado y FUN_180054060() indica cuándo
+            // el juego ya permite continuar con fileSetForMPLoad.
+            if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
+                NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
+                std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
+            }
+
+            if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+                const bool stillPreparing =
+                    NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+                if (stillPreparing) {
+                    if (s_originalWait) {
+                        s_originalWait(scrThread, waitTime);
+                    }
+                    return;
+                }
+
+                s_multiplayerTransitionStarted.store(true, std::memory_order_release);
                 std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
-                // Equivalente a FUN_180053da0/FUN_180053f00 del client-main.dll
-                // descomprimido: preparar los archivos de MP y pasar al StartScreen1.
                 NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
                 NativeInvoker::invoke<void>(Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
                 NativeInvoker::invoke<void>(Natives::START_SCREEN_1, "StartScreen1");
