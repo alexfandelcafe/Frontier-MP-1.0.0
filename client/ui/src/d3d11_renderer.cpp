@@ -939,17 +939,21 @@ void D3D11Renderer::triggerConnect() {
         port = static_cast<uint16_t>(std::stoi(m_serverPort));
     } catch (...) {}
 
-    std::cout << "[D3D11Renderer] Conectando a " << m_serverIp << ":" << port 
+    std::cout << "[D3D11Renderer] Conectando a " << m_serverIp << ":" << port
               << " como '" << m_playerName << "'..." << std::endl;
 
     m_showMainMenu = false;
     m_showChat = true;
 
-    // Conectar al servidor y solicitar la transición real del frontend de RDR1
-    // al estado de mundo multijugador. El actor no se crea aquí: PlayerLayout
-    // todavía no existe mientras RDR permanece en el frontend.
+    const bool connected =
+        Net::ClientNetwork::get().connect(m_serverIp, port, m_playerName);
+
+    if (!connected) {
+        std::cerr << "[D3D11Renderer] No se pudo iniciar la conexión al servidor." << std::endl;
+        return;
+    }
+
     Core::EngineHooks::requestMultiplayerWorldLoad();
-    Net::ClientNetwork::get().connect(m_serverIp, port, m_playerName);
     Core::PlayerFactory::requestLocalPlayerSpawn(
         Vector3(-180.0f, 60.0f, 1950.0f), 0.0f, 837);
 }
