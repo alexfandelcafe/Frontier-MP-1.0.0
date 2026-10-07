@@ -260,9 +260,10 @@ bool EngineHooks::hookGraphics() {
 }
 
 static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    // NativeInvoker puede instalarse antes de que RAGE haya publicado
-    // sm_CommandsRegistration. Reintentamos la resolución desde el hilo de
-    // scripts, donde ya estamos dentro de un contexto válido del juego.
+    // La resolución de natives puede ocurrir durante los primeros Wait() del juego,
+    // pero NO ejecutamos natives arbitrarias en estado idle. En particular,
+    // GET_SCRIPT_NAME no es necesario para la transición multiplayer y podía
+    // provocar una AV en esta fase temprana del arranque.
     static std::atomic<uint32_t> s_waitHookCalls{0};
     static std::atomic<bool> s_nativeReadyLogged{false};
 
@@ -272,68 +273,61 @@ static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
     }
 
     const bool nativeReady = NativeInvoker::isReady();
-
     if (nativeReady && !s_nativeReadyLogged.exchange(true, std::memory_order_acq_rel)) {
         std::cout << "[EngineHooks] NativeInvoker listo dentro de rage::scrThread::Wait." << std::endl;
     } else if (!nativeReady && (waitCall % 120) == 0) {
         std::cout << "[EngineHooks] rage::scrThread::Wait activo; NativeInvoker aún no está listo (reintentando)." << std::endl;
     }
 
-    if (nativeReady) {
-        const bool multiplayerWorldRequested =
-            s_multiplayerWorldRequested.load(std::memory_order_acquire);
+    const bool multiplayerWorldRequested =
+        s_multiplayerWorldRequested.load(std::memory_order_acquire);
 
-        // La secuencia LoadOnline del cliente RDRMP original se ejecuta desde
-        // una fibra de script, no necesariamente desde "press_start" o "main".
-        // Enganchamos la transición al primer Wait() de cualquier fibra RAGE
-        // después de pulsar Join.
-        if (multiplayerWorldRequested) {
-            if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
-                NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
-                std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
-            }
+    // La transición multiplayer es el único momento en que HookedWait utiliza
+    // natives del juego. Así evitamos tocar el sistema de scripts durante el
+    // arranque normal del title screen.
+    if (multiplayerWorldRequested && nativeReady) {
+        if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
+            std::cout << "[EngineHooks] Invocando MULTIPLAYER_LOAD_PREPARE..." << std::endl;
+            NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
+            std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
+        }
 
-            if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
-                // FUN_180054060() del cliente RDRMP original devuelve distinto de
-                // cero mientras el juego todavía está preparando la carga.
-                const bool stillPreparing =
-                    NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+        if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
+            std::cout << "[EngineHooks] Consultando MULTIPLAYER_LOAD_READY_CHECK..." << std::endl;
 
-                if (stillPreparing) {
-                    if (s_originalWait) {
-                        // El cliente original usa Wait(0) dentro de este bucle.
-                        s_originalWait(scrThread, 0);
-                    }
-                    return;
+            // FUN_180054060() del cliente RDRMP original devuelve distinto de
+            // cero mientras el juego todavía está preparando la carga.
+            const bool stillPreparing =
+                NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
+
+            if (stillPreparing) {
+                if (s_originalWait) {
+                    // El cliente original usa Wait(0) dentro de este bucle.
+                    s_originalWait(scrThread, 0);
                 }
-
-                s_multiplayerTransitionStarted.store(true, std::memory_order_release);
-                std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
-                NativeInvoker::invoke<void>(
-                    Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
-                NativeInvoker::invoke<void>(
-                    Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
-                NativeInvoker::invoke<void>(
-                    Natives::START_SCREEN_1, "StartScreen1");
-                std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
+                return;
             }
 
-            // Mantener el spawn dentro del contexto de una fibra RAGE válida.
-            PlayerFactory::processPendingSpawn();
+            s_multiplayerTransitionStarted.store(true, std::memory_order_release);
+            std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
+
+            std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
+            NativeInvoker::invoke<void>(
+                Natives::FILE_SET_FOR_MP_LOAD, "fileSetForMPLoad");
+
+            std::cout << "[EngineHooks] Invocando fileStartupChecksComplete..." << std::endl;
+            NativeInvoker::invoke<void>(
+                Natives::FILE_SET_FOR_MP_LOAD, "fileStartupChecksComplete");
+
+            std::cout << "[EngineHooks] Invocando StartScreen1..." << std::endl;
+            NativeInvoker::invoke<void>(
+                Natives::START_SCREEN_1, "StartScreen1");
+
+            std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1." << std::endl;
         }
 
-        // El bloqueo de historia sigue limitado a los scripts que sabemos que
-        // controlan la entrada al modo campaña/frontend.
-        const char* scriptName = NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
-        const bool isTransitionScript = scriptName &&
-            (strcmp(scriptName, "press_start") == 0 || strcmp(scriptName, "main") == 0);
-
-        if (isTransitionScript && EngineHooks::isSingleplayerBlocked()) {
-            if (s_originalWait) {
-                s_originalWait(scrThread, 100);
-            }
-            return;
-        }
+        // Mantener el spawn dentro del contexto de una fibra RAGE válida.
+        PlayerFactory::processPendingSpawn();
     }
 
     if (s_originalWait) {
