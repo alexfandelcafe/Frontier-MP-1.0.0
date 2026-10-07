@@ -156,10 +156,11 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
         if (!worldLoadFallbackLogged &&
             !Frontier::Core::ScriptBridge::isRegistered() &&
             Frontier::Core::EngineHooks::isSingleplayerBlocked() == false) {
-            // El mensaje se emite una sola vez para confirmar que el fallback
-            // está activo; la función anterior retorna inmediatamente mientras
-            // no haya una solicitud pendiente.
-            std::cout << "[FrontierClient] Esperando ScriptHookRDR para ejecutar la transición multiplayer desde un script thread." << std::endl;
+            std::cout
+                << "[FrontierClient] ScriptMain de ScriptHookRDR no inició; "
+                   "la transición multiplayer usará el contexto rage::scrThread::Wait "
+                   "cuando el servidor solicite cargar el mundo."
+                << std::endl;
             worldLoadFallbackLogged = true;
         }
 
