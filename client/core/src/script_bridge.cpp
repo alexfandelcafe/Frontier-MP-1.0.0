@@ -264,9 +264,9 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
         return;
     }
 
-    // Resolve the callback's wait primitive before registration. The scheduler
-    // may invoke ScriptMain as soon as the game resumes, before Frontier's
-    // worker thread has a chance to call initialize().
+    // Resolve only the wait primitive here. Do not perform console/file I/O or
+    // native API initialization from DllMain: ScriptHook and the Windows loader
+    // are still under loader lock at this point.
     s_scriptWait = getExportByExactName<ScriptWaitFn>(
         hookModule,
         "?scriptWait@@YAXK@Z");
@@ -278,23 +278,9 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
                 "scriptWait");
     }
 
-    const auto nativeInit =
-        getExportByExactName<ScriptNativeInitFn>(
-            hookModule,
-            "?nativeInit@@YAX_K@Z");
-    const auto nativePush64 =
-        getExportByExactName<ScriptNativePush64Fn>(
-            hookModule,
-            "?nativePush64@@YAX_K@Z");
-    const auto nativeCall =
-        getExportByExactName<ScriptNativeCallFn>(
-            hookModule,
-            "?nativeCall@@YAPEA_KXZ");
-
-    NativeInvoker::setScriptHookApi(
-        nativeInit,
-        nativePush64,
-        nativeCall);
+    if (!s_scriptWait) {
+        return;
+    }
 
     if (s_registered.load(std::memory_order_acquire) ||
         s_registrationRequested.exchange(true, std::memory_order_acq_rel)) {
@@ -302,14 +288,9 @@ void ScriptBridge::registerScriptEarly(HMODULE module) {
     }
 
     // ScriptHookRDR's SDK expects script registration from the mod's
-    // DLL_PROCESS_ATTACH. The launcher therefore loads ScriptHookRDR first,
-    // then Frontier calls this before its worker thread starts.
+    // DLL_PROCESS_ATTACH. The launcher loads ScriptHookRDR first so the export
+    // is already available when Frontier is attached.
     registerFn(module, &ScriptBridge::scriptMain);
-
-    std::cout
-        << "[ScriptBridge] FrontierMP registrado durante DLL_PROCESS_ATTACH; "
-           "scriptWait/natives resueltos antes del callback."
-        << std::endl;
 }
 
 void ScriptBridge::initialize(HMODULE module) {
