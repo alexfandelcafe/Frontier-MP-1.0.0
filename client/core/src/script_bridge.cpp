@@ -4,6 +4,8 @@
 #include <windows.h>
 #include <iostream>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 namespace Frontier::Core {
 
@@ -126,14 +128,69 @@ void dumpRelevantExports(HMODULE module) {
               << relevant << std::endl;
 }
 
-void resolveScriptHook() {
+HMODULE ensureScriptHookLoaded() {
     HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
-        static bool loggedMissingModule = false;
-        if (!loggedMissingModule) {
-            loggedMissingModule = true;
-            std::cerr << "[ScriptBridge] ScriptHookRDR.dll no está cargado." << std::endl;
+    if (hookModule) {
+        return hookModule;
+    }
+
+    static std::atomic<bool> loadAttemptLogged{false};
+
+    char gamePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(nullptr, gamePath, MAX_PATH)) {
+        std::string exePath(gamePath);
+        const size_t slash = exePath.find_last_of("\\\\/");
+        if (slash != std::string::npos) {
+            exePath.resize(slash + 1);
+            exePath += "ScriptHookRDR.dll";
+
+            hookModule = LoadLibraryExA(
+                exePath.c_str(),
+                nullptr,
+                LOAD_WITH_ALTERED_SEARCH_PATH);
+
+            if (hookModule) {
+                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado explícitamente desde: "
+                          << exePath << std::endl;
+                return hookModule;
+            }
         }
+    }
+
+    char ownPath[MAX_PATH] = {};
+    HMODULE ownModule = GetModuleHandleA("frontier_core.dll");
+    if (ownModule && GetModuleFileNameA(ownModule, ownPath, MAX_PATH)) {
+        std::string modulePath(ownPath);
+        const size_t slash = modulePath.find_last_of("\\\\/");
+        if (slash != std::string::npos) {
+            modulePath.resize(slash + 1);
+            modulePath += "ScriptHookRDR.dll";
+
+            hookModule = LoadLibraryExA(
+                modulePath.c_str(),
+                nullptr,
+                LOAD_WITH_ALTERED_SEARCH_PATH);
+
+            if (hookModule) {
+                std::cout << "[ScriptBridge] ScriptHookRDR.dll cargado explícitamente desde: "
+                          << modulePath << std::endl;
+                return hookModule;
+            }
+        }
+    }
+
+    if (!loadAttemptLogged.exchange(true, std::memory_order_acq_rel)) {
+        std::cerr << "[ScriptBridge] No se pudo cargar ScriptHookRDR.dll. "
+                  << "Asegúrate de que el DLL esté instalado junto a RDR.exe."
+                  << " GetLastError=" << GetLastError() << std::endl;
+    }
+
+    return nullptr;
+}
+
+void resolveScriptHook() {
+    HMODULE hookModule = ensureScriptHookLoaded();
+    if (!hookModule) {
         return;
     }
 
@@ -175,7 +232,8 @@ void ScriptBridge::registerScript(HMODULE module) {
 
     if (!s_scriptRegister || !s_scriptWait) {
         if (!s_warnedUnavailable.exchange(true, std::memory_order_acq_rel)) {
-            std::cout << "[ScriptBridge] No se pudieron resolver los exports scriptRegister/scriptWait de ScriptHookRDR." << std::endl;
+            std::cout << "[ScriptBridge] ScriptHookRDR cargado pero no se pudieron resolver "
+                         "scriptRegister/scriptWait." << std::endl;
         }
         return;
     }
