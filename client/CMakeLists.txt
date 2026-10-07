@@ -74,6 +74,15 @@ if(WIN32)
     target_link_libraries(frontier_launcher PRIVATE comdlg32 shell32 ole32 winhttp)
 endif()
 
+# ScriptHookRDR is kept outside the source repository as a dependency of the game,
+# but this project packages the user-provided runtime DLL into the client output.
+add_custom_command(TARGET frontier_launcher POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/ScriptHookRDR.dll"
+        "$<TARGET_FILE_DIR:frontier_launcher>/ScriptHookRDR.dll"
+    COMMENT "Copying ScriptHookRDR.dll to client output directory..."
+)
+
 set_target_properties(frontier_launcher PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
