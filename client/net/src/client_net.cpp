@@ -403,10 +403,7 @@ void ClientNetwork::finishWorldLoadIfReady() {
 
         UI::CefManager::get().setMainMenuVisible(false);
 
-        const uintptr_t actor =
-            Core::PlayerFactory::getLocalPlayerActor();
-
-        if (actor) {
+        if (Core::PlayerFactory::isLocalPlayerReady()) {
             BitStream bs;
             bs.write<uint16_t>(
                 static_cast<uint16_t>(
