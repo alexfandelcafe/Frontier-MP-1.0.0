@@ -150,6 +150,9 @@ bool readFrontierScriptRecord(
         return false;
     }
 
+    const uintptr_t frontierBase =
+        reinterpret_cast<uintptr_t>(frontierModule);
+
     for (uintptr_t cursor = begin;
          cursor < end;
          cursor += sizeof(uintptr_t)) {
@@ -159,7 +162,7 @@ bool readFrontierScriptRecord(
             candidate =
                 *reinterpret_cast<const uintptr_t*>(cursor);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
+            continue;
         }
 
         if (!candidate) {
@@ -195,13 +198,15 @@ bool readFrontierScriptRecord(
             continue;
         }
 
+        // Accept the registered Frontier record even while ScriptHook has not
+        // yet assigned a ScriptId or created its fiber. Those fields are the
+        // responsibility of the ScriptManager preparation pass.
         if (recordModule != frontierModule ||
-            !recordCallback ||
-            !recordFiber ||
-            recordId == 0) {
+            recordCallback == 0) {
             continue;
         }
 
+        (void)frontierBase;
         record = candidate;
         scriptId = recordId;
         fiber = recordFiber;
@@ -523,6 +528,71 @@ void ScriptBridge::dispatchRegisteredScript(
         return;
     }
 
+    // UINT32_MAX is the unassigned sentinel observed in ScriptHookRDR 1.5.2.
+    constexpr uint32_t kUnassignedScriptId = UINT32_MAX;
+
+    // At this point the record exists, but ScriptHook may not have completed
+    // its manager preparation yet. The original ScriptHook Run path normally
+    // calls FUN_180031970 for this job. We invoke that same preparation routine
+    // only from the post-Run script-thread context, never from the Frontier
+    // worker and never from DllMain.
+    if (scriptId == 0 ||
+        scriptId == kUnassignedScriptId ||
+        fiber == 0) {
+
+        static ScriptHookMaintenanceFn scriptManagerPrepare = nullptr;
+        if (!scriptManagerPrepare) {
+            scriptManagerPrepare =
+                reinterpret_cast<ScriptHookMaintenanceFn>(
+                    hookModuleBase + kScriptManagerMaintenanceRva);
+        }
+
+        for (int pass = 0; pass < 3; ++pass) {
+            if (!scriptManagerPrepare) {
+                return;
+            }
+
+            __try {
+                scriptManagerPrepare();
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                static std::atomic<bool> preparationFailureLogged{false};
+                if (!preparationFailureLogged.exchange(
+                        true, std::memory_order_acq_rel)) {
+                    std::cerr
+                        << "[ScriptBridge] Excepción preparando el fiber "
+                           "Frontier mediante ScriptHookRDR::ScriptManager. "
+                           "code=0x"
+                        << std::hex << GetExceptionCode()
+                        << std::dec << std::endl;
+                }
+                return;
+            }
+
+            if (!readFrontierScriptRecord(
+                    hookModule,
+                    frontierModule,
+                    record,
+                    scriptId,
+                    fiber,
+                    callbackObject)) {
+                return;
+            }
+
+            if (scriptId != 0 &&
+                scriptId != kUnassignedScriptId &&
+                fiber != 0) {
+                break;
+            }
+        }
+    }
+
+    if (scriptId == 0 ||
+        scriptId == kUnassignedScriptId ||
+        fiber == 0 ||
+        !s_scriptStartById) {
+        return;
+    }
+
     if (!s_scriptDispatchLogged.exchange(
             true, std::memory_order_acq_rel)) {
         std::cout
@@ -535,10 +605,6 @@ void ScriptBridge::dispatchRegisteredScript(
             << std::dec
             << ". Iniciando mediante FUN_180031a20."
             << std::endl;
-    }
-
-    if (!s_scriptStartById) {
-        return;
     }
 
     __try {
