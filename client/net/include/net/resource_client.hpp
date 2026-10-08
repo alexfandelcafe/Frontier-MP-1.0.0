@@ -17,6 +17,13 @@ public:
         uint16_t httpPort,
         const std::filesystem::path& cacheRoot);
 
+    // Equivalent client-side gate for ResourcesManager::LoadAllResources():
+    // validate every downloaded resource tree before allowing InitSpawn/Welcome.
+    static bool loadAllResources(
+        const std::filesystem::path& cacheRoot,
+        uint32_t& resourceCount,
+        uint32_t& fileCount);
+
 private:
     static bool httpGet(
         const std::string& host,
