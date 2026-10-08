@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
 project(FrontierMP VERSION 1.0.0 LANGUAGES C CXX)
 
+include(FetchContent)
+
+# Frontier uses the real ENet transport for both client and dedicated server.
+# ENet 1.3.18 is the stable release used by the current public SDK ecosystem.
+FetchContent_Declare(
+    frontier_enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG 1.3.18
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(frontier_enet)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
