@@ -123,7 +123,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout
             << "[ScriptBridge] ScriptMain todavía no ha iniciado; "
-               "registro solicitado a través de la API pública de ScriptHookRDR."
+               "se registró al cargar Frontier y queda a cargo de ScriptHookRDR."
             << std::endl;
     }
 
@@ -144,11 +144,12 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Once RDR has produced a live game swap chain, ScriptHook has a
-        // running game lifecycle to consume the public script registration.
+        // Registration is performed from DLL_PROCESS_ATTACH. Keep the worker
+        // check only as telemetry; do not register a second time.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
-            (++scriptBridgeRetryTicks % 30) == 0) {
-            Frontier::Core::ScriptBridge::registerScript(hModule);
+            (++scriptBridgeRetryTicks % 60) == 0) {
+            OutputDebugStringA(
+                "[FrontierClient] ScriptMain still has not started after attach registration.\n");
         }
 
         Frontier::UI::CefManager::get().update();
@@ -162,11 +163,11 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
 
-        // Do not call ScriptHook from inside DLL_PROCESS_ATTACH. The launcher
-        // deliberately injects Frontier while RDR's primary thread is still
-        // suspended; ScriptHook's scheduler is not ready at this point.
-        // FrontierMainThread waits for a live render lifecycle before calling
-        // the public registration API.
+        // RDR is already running when the launcher injects Frontier. Match the
+        // public RDR1 ScriptHook SDK lifecycle: register ScriptMain from
+        // DLL_PROCESS_ATTACH, then let ScriptHook own the script scheduler.
+        Frontier::Core::ScriptBridge::registerScript(hModule);
+
         HANDLE hThread = CreateThread(nullptr, 0,
             (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
