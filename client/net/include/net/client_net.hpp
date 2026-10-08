@@ -77,7 +77,6 @@ private:
     std::atomic<bool> m_resourcesReady{false};
     std::atomic<bool> m_resourceFailed{false};
     std::atomic<bool> m_loadResourcesStarted{false};
-    std::atomic<bool> m_loadingScreenVisible{false};
     std::atomic<bool> m_clientWelcomeSent{false};
     std::atomic<bool> m_worldTransitionRequested{false};
     std::atomic<bool> m_localPlayerObserved{false};
