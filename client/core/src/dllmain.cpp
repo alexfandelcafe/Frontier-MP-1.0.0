@@ -112,10 +112,6 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // Registrar Frontier desde el hilo propio del módulo, fuera de DllMain.
-    // Se prefiere scriptRegisterAdditionalThread para inyección tardía.
-    Frontier::Core::ScriptBridge::registerScript(hModule);
-
     // 3. Inicializar MinHook, DirectX/WndProc y los interceptores gráficos.
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
     const bool engineHooksReady = Frontier::Core::EngineHooks::initialize();
