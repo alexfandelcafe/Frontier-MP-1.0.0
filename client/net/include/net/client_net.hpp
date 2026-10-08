@@ -62,10 +62,14 @@ private:
     void beginServerDataLoading();
     void finishWorldLoadIfReady();
     void startPendingConnection();
+    void startNetworkThread();
+    void networkLoop();
 
     std::atomic<bool> m_connected{false};
     std::atomic<bool> m_connecting{false};
     std::atomic<bool> m_connectRequested{false};
+    std::atomic<bool> m_networkRunning{false};
+    std::atomic<bool> m_clientWelcomeQueued{false};
 
     mutable std::mutex m_connectionRequestMutex;
     std::string m_requestedHost;
@@ -91,6 +95,7 @@ private:
     std::atomic<bool> m_worldTransitionRequested{false};
     std::atomic<bool> m_localPlayerObserved{false};
 
+    std::thread m_networkThread;
     std::thread m_resourceThread;
     std::filesystem::path m_cacheRoot;
     std::chrono::steady_clock::time_point m_clientWelcomeDeadline{};
