@@ -11,6 +11,7 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <cstring>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -40,6 +41,8 @@ static IDXGISwapChain* s_pLastSwapChain = nullptr;
 static std::atomic<bool> s_multiplayerWorldRequested{false};
 static std::atomic<bool> s_multiplayerPreparationStarted{false};
 static std::atomic<bool> s_multiplayerTransitionStarted{false};
+static void __fastcall HookedWait(void* scrThread, uint32_t waitTime);
+static void* s_originalWait = nullptr;
 
 bool EngineHooks::initialize() {
     std::cout << "[EngineHooks] Inicializando MinHook e interceptor seguro..." << std::endl;
@@ -265,87 +268,174 @@ void EngineHooks::processMultiplayerWorldLoad() {
         return;
     }
 
-    // NativeInvoker puede no estar resuelto durante el arranque. La
-    // transición no debe quedar bloqueada esperando una inicialización que
-    // ocurrió demasiado pronto en EngineHooks::initialize().
-    static std::atomic<bool> s_nativeInitLogged{false};
-    static uint32_t s_nativeInitPollCounter = 0;
-
     if (!NativeInvoker::isReady()) {
+        static uint32_t s_nativeInitPollCounter = 0;
         ++s_nativeInitPollCounter;
 
         const bool initialized = NativeInvoker::initialize();
-        if (initialized && !s_nativeInitLogged.exchange(true, std::memory_order_acq_rel)) {
-            std::cout << "[EngineHooks] NativeInvoker resuelto durante el fallback de carga multiplayer."
-                      << std::endl;
+        if (initialized) {
+            std::cout
+                << "[EngineHooks] NativeInvoker resuelto durante la carga multiplayer."
+                << std::endl;
         }
 
         if (!NativeInvoker::isReady()) {
             if ((s_nativeInitPollCounter % 120) == 0) {
-                std::cerr << "[EngineHooks] NativeInvoker aún no está listo; "
-                             "no se puede ejecutar la transición multiplayer."
-                          << std::endl;
+                std::cerr
+                    << "[EngineHooks] NativeInvoker aún no está listo; "
+                       "no se ejecutará la transición multiplayer."
+                    << std::endl;
             }
             return;
         }
     }
 
-    static uint32_t s_readyPollCounter = 0;
+    if (!s_multiplayerTransitionStarted.exchange(
+            true, std::memory_order_acq_rel)) {
 
-    if (!s_multiplayerPreparationStarted.exchange(true, std::memory_order_acq_rel)) {
-        std::cout << "[EngineHooks] Invocando MULTIPLAYER_LOAD_PREPARE..." << std::endl;
-        NativeInvoker::invoke<void>(Natives::MULTIPLAYER_LOAD_PREPARE);
-        std::cout << "[EngineHooks] Preparación interna de carga online iniciada." << std::endl;
-    }
+        std::cout
+            << "[EngineHooks] Reproduciendo la secuencia LoadOnline conocida de RDRMP..."
+            << std::endl;
 
-    if (!s_multiplayerTransitionStarted.load(std::memory_order_acquire)) {
-        ++s_readyPollCounter;
-
-        const bool stillPreparing =
-            NativeInvoker::invoke<bool>(Natives::MULTIPLAYER_LOAD_READY_CHECK);
-
-        if (stillPreparing) {
-            if ((s_readyPollCounter % 60) == 0) {
-                std::cout << "[EngineHooks] Esperando a que RDR1 termine de preparar la carga online..."
-                          << std::endl;
-            }
-            return;
-        }
-
-        s_multiplayerTransitionStarted.store(true, std::memory_order_release);
-        std::cout << "[EngineHooks] Iniciando secuencia RDRMP de carga online..." << std::endl;
-
-        std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
-        NativeInvoker::invoke<void>(
-            Natives::FILE_SET_FOR_MP_LOAD,
-            "fileSetForMPLoad");
-
-        std::cout << "[EngineHooks] Invocando fileStartupChecksComplete..." << std::endl;
-        NativeInvoker::invoke<void>(
-            Natives::FILE_SET_FOR_MP_LOAD,
-            "fileStartupChecksComplete");
-
+        // Verificado en client-main.dll:
+        // FUN_180053f00 -> GetCommand(0x2DF89C2E) -> "StartScreen1".
         std::cout << "[EngineHooks] Invocando StartScreen1..." << std::endl;
         NativeInvoker::invoke<void>(
             Natives::START_SCREEN_1,
             "StartScreen1");
 
-        std::cout << "[EngineHooks] Secuencia de carga online solicitada a RDR1."
-                  << std::endl;
+        // Verificado en client-main.dll:
+        // FUN_180053da0 -> GetCommand(0xB58825F5) -> texto del comando.
+        std::cout << "[EngineHooks] Invocando fileSetForMPLoad..." << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD,
+            "fileSetForMPLoad");
+
+        std::cout
+            << "[EngineHooks] Invocando fileStartupChecksComplete..."
+            << std::endl;
+        NativeInvoker::invoke<void>(
+            Natives::FILE_SET_FOR_MP_LOAD,
+            "fileStartupChecksComplete");
+
+        std::cout
+            << "[EngineHooks] Secuencia conocida de LoadOnline enviada a RAGE."
+            << std::endl;
     }
 
+    // El spawn queda en el mismo contexto de script RAGE que la transición.
     PlayerFactory::processPendingSpawn();
 }
 
+static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
+    if (NativeInvoker::isReady()) {
+        // LoadOnline del cliente original corre dentro de una fibra de script.
+        // Usamos Wait() como punto seguro de entrada: aquí ya estamos dentro
+        // del contexto RAGE que puede despachar nativas y ceder al scheduler.
+        if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
+            EngineHooks::processMultiplayerWorldLoad();
+
+            // processMultiplayerWorldLoad() puede haber dejado el mundo todavía
+            // cargando; no alteramos el wait del script salvo para mantener la
+            // cesión cooperativa que usa el cliente original.
+            if (s_originalWait) {
+                reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
+                    s_originalWait)(scrThread, 0);
+            }
+            return;
+        }
+
+        // Mantener bloqueada la entrada de historia mientras el frontend está activo.
+        const char* scriptName =
+            NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
+        const bool isTransitionScript =
+            scriptName &&
+            (std::strcmp(scriptName, "press_start") == 0 ||
+             std::strcmp(scriptName, "main") == 0);
+
+        if (isTransitionScript && EngineHooks::isSingleplayerBlocked()) {
+            if (s_originalWait) {
+                reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
+                    s_originalWait)(scrThread, 100);
+            }
+            return;
+        }
+    }
+
+    if (s_originalWait) {
+        reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
+            s_originalWait)(scrThread, waitTime);
+    }
+}
+
 bool EngineHooks::hookScriptThread() {
-    // ScriptHookRDR 1.5.2 already owns the real script scheduler hooks:
-    // rage::scrThread::Run, rage::scrThread::Reset and ConvertThreadToFiber.
-    // The previous Frontier pattern targeted a different routine and added no
-    // value to the multiplayer transition, so leave the RAGE scheduler intact.
     std::cout
-        << "[EngineHooks] Scheduler de scripts delegado a ScriptHookRDR "
-           "(Run/Reset/ConvertThreadToFiber)."
+        << "[EngineHooks] Instalando punto de entrada sobre rage::scrThread::Wait..."
         << std::endl;
+
+    const uintptr_t match =
+        PatternScanner::findPattern(nullptr, "E8 ? ? ? ? 8D 56 10");
+
+    if (!match) {
+        std::cerr
+            << "[EngineHooks] Patrón de rage::scrThread::Wait no encontrado; "
+               "no se instalará el hook de transición."
+            << std::endl;
+        return false;
+    }
+
+    const uintptr_t targetFunc =
+        PatternScanner::getRelativeAddress(match, 5, 1);
+
+    if (!targetFunc) {
+        std::cerr
+            << "[EngineHooks] No se pudo resolver rage::scrThread::Wait."
+            << std::endl;
+        return false;
+    }
+
+    const MH_STATUS createStatus =
+        MH_CreateHook(
+            reinterpret_cast<void*>(targetFunc),
+            reinterpret_cast<void*>(&HookedWait),
+            reinterpret_cast<void**>(&s_originalWait));
+
+    if (createStatus != MH_OK &&
+        createStatus != MH_ERROR_ALREADY_CREATED) {
+        std::cerr
+            << "[EngineHooks] MH_CreateHook para rage::scrThread::Wait falló. "
+               "MH_STATUS="
+            << static_cast<int>(createStatus)
+            << std::endl;
+        return false;
+    }
+
+    if (!s_originalWait) {
+        std::cerr
+            << "[EngineHooks] No se obtuvo trampoline para rage::scrThread::Wait."
+            << std::endl;
+        return false;
+    }
+
+    const MH_STATUS enableStatus =
+        MH_EnableHook(reinterpret_cast<void*>(targetFunc));
+
+    if (enableStatus != MH_OK &&
+        enableStatus != MH_ERROR_ENABLED) {
+        std::cerr
+            << "[EngineHooks] MH_EnableHook para rage::scrThread::Wait falló. "
+               "MH_STATUS="
+            << static_cast<int>(enableStatus)
+            << std::endl;
+        return false;
+    }
+
+    std::cout
+        << "[EngineHooks] rage::scrThread::Wait hook instalado en 0x"
+        << std::hex << targetFunc << std::dec
+        << ". La transición multiplayer podrá ejecutarse dentro de una fibra RAGE."
+        << std::endl;
+
     return true;
 }
 void EngineHooks::setupSandboxWorld() {
