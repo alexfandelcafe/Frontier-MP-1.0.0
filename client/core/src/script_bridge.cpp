@@ -70,14 +70,6 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    // The launcher intentionally keeps RDR's main thread suspended while both
-    // DLLs are injected. Registering against ScriptHook before the game has
-    // entered its render/script lifecycle is too early. FrontierMainThread
-    // calls this only after EngineHooks reports a live RDR swap chain.
-    if (!EngineHooks::isGameRenderReady()) {
-        return;
-    }
-
     resolveRuntimeApi();
 
     if (!s_scriptRegister || !s_scriptWait) {
@@ -107,10 +99,8 @@ void ScriptBridge::registerScript(HMODULE module) {
         module,
         &ScriptBridge::scriptMain);
 
-    std::cout
-        << "[ScriptBridge] scriptRegister registrado; "
-           "ScriptMain queda en manos del scheduler de ScriptHookRDR."
-        << std::endl;
+    OutputDebugStringA(
+        "[ScriptBridge] scriptRegister registrado; ScriptMain queda en manos del scheduler de ScriptHookRDR.\n");
 }
 
 bool ScriptBridge::isRegistered() {
@@ -119,6 +109,9 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
+    OutputDebugStringA(
+        "[ScriptBridge] ScriptMain ENTER.\n");
+
     s_registered.store(
         true,
         std::memory_order_release);
@@ -132,9 +125,8 @@ void __cdecl ScriptBridge::scriptMain() {
     // supported script context.
     NativeInvoker::initialize();
 
-    std::cout
-        << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
-        << std::endl;
+    OutputDebugStringA(
+        "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE.\n");
 
     for (;;) {
         runFrame();
