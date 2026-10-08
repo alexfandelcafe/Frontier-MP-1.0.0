@@ -14,227 +14,173 @@ namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
+using ScriptUnregisterFn = void (*)(HMODULE);
 
-ScriptRegisterFn s_scriptRegister = nullptr;
+ScriptRegisterFn s_scriptRegisterAdditionalThread = nullptr;
+ScriptRegisterFn s_scriptRegisterFallback = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
-
+ScriptUnregisterFn s_scriptUnregister = nullptr;
 
 template <typename T>
-T getExportByExactName(HMODULE module, const char* name) {
-    if (!module || !name) {
-        return nullptr;
-    }
-
+T resolveExport(HMODULE module, const char* name) {
+    if (!module || !name) return nullptr;
     const FARPROC proc = GetProcAddress(module, name);
     return proc ? reinterpret_cast<T>(proc) : nullptr;
 }
 
 template <typename T>
 T resolveMangledExport(HMODULE module, const char* token) {
-    if (!module || !token || !*token) {
-        return nullptr;
-    }
+    if (!module || !token || !*token) return nullptr;
 
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        return nullptr;
-    }
+    const auto* dos =
+        reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
 
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
-        reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        return nullptr;
-    }
+    const auto* nt =
+        reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
 
     const auto& directory =
         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (!directory.VirtualAddress || !directory.Size) {
-        return nullptr;
-    }
+    if (!directory.VirtualAddress || !directory.Size) return nullptr;
 
-    const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
-        reinterpret_cast<const uint8_t*>(module) + directory.VirtualAddress);
-    const auto* names = reinterpret_cast<const DWORD*>(
-        reinterpret_cast<const uint8_t*>(module) + exports->AddressOfNames);
+    const auto* exports =
+        reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
+            reinterpret_cast<const uint8_t*>(module) +
+            directory.VirtualAddress);
+    const auto* names =
+        reinterpret_cast<const DWORD*>(
+            reinterpret_cast<const uint8_t*>(module) +
+            exports->AddressOfNames);
 
     for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
-        const char* exportedName = reinterpret_cast<const char*>(
-            reinterpret_cast<const uint8_t*>(module) + names[i]);
+        const char* exportedName =
+            reinterpret_cast<const char*>(
+                reinterpret_cast<const uint8_t*>(module) + names[i]);
 
-        if (!std::strstr(exportedName, token)) {
-            continue;
-        }
+        if (!std::strstr(exportedName, token)) continue;
 
         const FARPROC proc = GetProcAddress(module, exportedName);
-        if (proc) {
-            return reinterpret_cast<T>(proc);
-        }
+        if (proc) return reinterpret_cast<T>(proc);
     }
 
     return nullptr;
 }
+
 void resolveScriptHook() {
+    HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule) return;
 
-    // The launcher loads ScriptHookRDR.dll before Frontier. We intentionally
-    // bind only to its public SDK/native exports and leave its internal
-    // rage::scrThread::Run/Reset/fiber lifecycle untouched.
-    const HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
-        return;
-    }
-
-    s_scriptRegister = getExportByExactName<ScriptRegisterFn>(
-        hookModule,
-        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!s_scriptRegister) {
-        s_scriptRegister = resolveMangledExport<ScriptRegisterFn>(
+    s_scriptRegisterAdditionalThread =
+        resolveExport<ScriptRegisterFn>(
             hookModule,
-            "scriptRegister");
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule, "scriptRegisterAdditionalThread");
     }
 
-    s_scriptWait = getExportByExactName<ScriptWaitFn>(
-        hookModule,
-        "?scriptWait@@YAXK@Z");
+    s_scriptRegisterFallback =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!s_scriptRegisterFallback) {
+        s_scriptRegisterFallback =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule, "scriptRegister");
+    }
+
+    s_scriptWait =
+        resolveExport<ScriptWaitFn>(
+            hookModule, "?scriptWait@@YAXK@Z");
 
     if (!s_scriptWait) {
-        s_scriptWait = resolveMangledExport<ScriptWaitFn>(
-            hookModule,
-            "scriptWait");
+        s_scriptWait =
+            resolveMangledExport<ScriptWaitFn>(
+                hookModule, "scriptWait");
     }
 
-    const auto nativeInit =
-        getExportByExactName<ScriptNativeInitFn>(
+    s_scriptUnregister =
+        resolveExport<ScriptUnregisterFn>(
             hookModule,
-            "?nativeInit@@YAX_K@Z");
-    const auto nativePush64 =
-        getExportByExactName<ScriptNativePush64Fn>(
-            hookModule,
-            "?nativePush64@@YAX_K@Z");
-    const auto nativeCall =
-        getExportByExactName<ScriptNativeCallFn>(
-            hookModule,
-            "?nativeCall@@YAPEA_KXZ");
+            "?scriptUnregister@@YAXPEAUHINSTANCE__@@@Z");
 
-    static std::atomic<bool> nativeApiBound{false};
-    if (nativeInit && nativePush64 && nativeCall &&
-        !nativeApiBound.exchange(true, std::memory_order_acq_rel)) {
-        NativeInvoker::setScriptHookApi(
-            nativeInit,
-            nativePush64,
-            nativeCall);
+    if (!s_scriptUnregister) {
+        s_scriptUnregister =
+            resolveMangledExport<ScriptUnregisterFn>(
+                hookModule, "scriptUnregister");
     }
+
+    NativeInvoker::initialize();
 }
 
 } // namespace
 
-void ScriptBridge::registerScriptEarly(HMODULE module) {
+void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
-        s_registered.load(std::memory_order_acquire) ||
-        s_registrationRequested.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    // The launcher deliberately maps ScriptHookRDR.dll before frontier_core.dll.
-    // Register from DLL_PROCESS_ATTACH as the SDK expects, before ScriptHook's
-    // worker has a chance to perform its initial script scan.
-    const HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
-        return;
-    }
-
-    ScriptRegisterFn registerFn =
-        getExportByExactName<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!registerFn) {
-        registerFn =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule,
-                "scriptRegister");
-    }
-
-    if (!registerFn) {
-        return;
-    }
-
-    if (s_registrationRequested.exchange(
-            true, std::memory_order_acq_rel)) {
-        return;
-    }
-
-    registerFn(module, &ScriptBridge::scriptMain);
-
-    OutputDebugStringA(
-        "[ScriptBridge] scriptRegister enviado desde DLL_PROCESS_ATTACH.\n");
-}
-
-void ScriptBridge::tryRegister(HMODULE module) {
-    if (!module ||
-        s_registered.load(std::memory_order_acquire) ||
-        s_registrationRequested.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    // Fallback only when early registration was impossible (for example,
-    // ScriptHookRDR was not visible yet). No internal ScriptHook functions
-    // or scheduler hooks are touched here.
-    const HMODULE hookModule = GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
+        s_registered.load(std::memory_order_acquire)) {
         return;
     }
 
     resolveScriptHook();
-    if (!s_scriptRegister) {
-        return;
-    }
 
-    if (s_registrationRequested.exchange(
-            true, std::memory_order_acq_rel)) {
-        return;
-    }
+    if (!s_scriptWait ||
+        (!s_scriptRegisterAdditionalThread &&
+         !s_scriptRegisterFallback)) {
 
-    std::cout
-        << "[ScriptBridge] Registrando Frontier mediante scriptRegister "
-           "desde el worker (fallback)."
-        << std::endl;
-
-    s_scriptRegister(module, &ScriptBridge::scriptMain);
-
-    std::cout
-        << "[ScriptBridge] scriptRegister enviado; ScriptHookRDR manejará "
-           "el Run/Reset/fiber lifecycle."
-        << std::endl;
-}
-
-void ScriptBridge::initialize(HMODULE module) {
-    resolveScriptHook();
-    tryRegister(module);
-
-    const HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
-
-    if (!hookModule) {
-        return;
-    }
-
-    if (!s_scriptWait) {
         if (!s_warnedUnavailable.exchange(
                 true, std::memory_order_acq_rel)) {
             std::cerr
-                << "[ScriptBridge] ScriptHookRDR está cargado, pero "
-                   "scriptWait no pudo resolverse."
+                << "[ScriptBridge] ScriptHookRDR no expone la API "
+                   "necesaria para crear el script Frontier."
                 << std::endl;
         }
-    }
-}
 
-void ScriptBridge::update(HMODULE module) {
-    // Fallback only when ScriptHookRDR was not visible during DLL attach.
-    // From this point onward ScriptHookRDR owns Run/Reset/fiber creation,
-    // and Frontier only uses the public registration API.
-    tryRegister(module);
+        return;
+    }
+
+    // ScriptHook puede tardar en iniciar su scheduler. Reintentar una solicitud
+    // que no comenzó es seguro y evita el bloqueo que vimos con scriptRegister.
+    const uint64_t now = GetTickCount64();
+    const uint64_t last =
+        s_lastRegistrationTick.load(std::memory_order_acquire);
+
+    if (s_registrationInFlight.load(std::memory_order_acquire)) {
+        if (now - last < 3000) return;
+
+        if (s_scriptUnregister) {
+            s_scriptUnregister(module);
+        }
+
+        s_registrationInFlight.store(false, std::memory_order_release);
+    }
+
+    s_lastRegistrationTick.store(
+        now, std::memory_order_release);
+    s_registrationInFlight.store(
+        true, std::memory_order_release);
+
+    if (s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread(
+            module, &ScriptBridge::scriptMain);
+
+        std::cout
+            << "[ScriptBridge] Registro solicitado mediante "
+               "scriptRegisterAdditionalThread."
+            << std::endl;
+    } else {
+        s_scriptRegisterFallback(
+            module, &ScriptBridge::scriptMain);
+
+        std::cout
+            << "[ScriptBridge] Registro solicitado mediante scriptRegister."
+            << std::endl;
+    }
 }
 
 bool ScriptBridge::isRegistered() {
@@ -242,46 +188,18 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
-    // ScriptHookRDR invokes this callback as the fiber entrypoint. Do not
-    // suppress subsequent invocations: Reset/load may recreate the script
-    // fiber and invoke the registered callback again.
     s_registered.store(true, std::memory_order_release);
+    s_registrationInFlight.store(false, std::memory_order_release);
 
     std::cout
-        << "[ScriptBridge] ScriptMain invocado por el scheduler normal de "
-           "ScriptHookRDR."
+        << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
         << std::endl;
 
     for (;;) {
-        __try {
-            runFrame();
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            std::cerr
-                << "[ScriptBridge] ACCESS VIOLATION/excepción SEH en "
-                   "runFrame. code=0x"
-                << std::hex << GetExceptionCode()
-                << std::dec
-                << ". Se aborta únicamente el script Frontier."
-                << std::endl;
-            return;
-        }
+        runFrame();
 
-        if (s_scriptWait) {
-            __try {
-                s_scriptWait(0);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                std::cerr
-                    << "[ScriptBridge] ACCESS VIOLATION/excepción SEH en "
-                       "scriptWait. code=0x"
-                    << std::hex << GetExceptionCode()
-                    << std::dec
-                    << ". Se aborta únicamente el script Frontier."
-                    << std::endl;
-                return;
-            }
-        } else {
-            return;
-        }
+        if (!s_scriptWait) return;
+        s_scriptWait(0);
     }
 }
 
@@ -290,9 +208,7 @@ void ScriptBridge::runFrame() {
         NativeInvoker::initialize();
     }
 
-    if (!NativeInvoker::isReady()) {
-        return;
-    }
+    if (!NativeInvoker::isReady()) return;
 
     EngineHooks::processMultiplayerWorldLoad();
 }
