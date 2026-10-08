@@ -14,6 +14,52 @@
 #endif
 
 namespace fs = std::filesystem;
+#ifdef _WIN32
+static bool waitForRdrWindow(DWORD processId, DWORD timeoutMs) {
+    const DWORD start = GetTickCount();
+    while (GetTickCount() - start < timeoutMs) {
+        struct WindowSearch {
+            DWORD pid;
+            HWND found;
+        } search{processId, nullptr};
+
+        EnumWindows(
+            [](HWND hwnd, LPARAM lParam) -> BOOL {
+                auto* s = reinterpret_cast<WindowSearch*>(lParam);
+                DWORD pid = 0;
+                GetWindowThreadProcessId(hwnd, &pid);
+                if (pid != s->pid || !IsWindowVisible(hwnd)) {
+                    return TRUE;
+                }
+
+                char title[256] = {};
+                GetWindowTextA(hwnd, title, sizeof(title));
+                if (std::strlen(title) > 0 ||
+                    GetClassNameA(hwnd, title, sizeof(title))) {
+                    s->found = hwnd;
+                    return FALSE;
+                }
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&search));
+
+        if (search.found) {
+            return true;
+        }
+
+        if (WaitForSingleObject(
+                OpenProcess(SYNCHRONIZE, FALSE, processId),
+                0) == WAIT_OBJECT_0) {
+            return false;
+        }
+
+        Sleep(100);
+    }
+    return false;
+}
+#endif
+
+
 
 struct LauncherSettings {
     std::string gamePath; // Ruta a la carpeta que contiene RDR.exe o ruta al exe
@@ -307,16 +353,13 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId
-              << "). Loading ScriptHookRDR before FrontierMP..." << std::endl;
+              << "). Loading ScriptHookRDR first..." << std::endl;
 
-    // ScriptHookRDR MUST be resident before frontier_core.dll is attached.
-    // Frontier's DLL_PROCESS_ATTACH calls the public scriptRegister() API;
-    // registering at that point matches the normal ScriptHook SDK lifecycle
-    // and places the script in ScriptHook's queue before its worker scans it.
-    //
-    // RDR remains suspended for both LoadLibrary calls, so ScriptHook's own
-    // worker cannot race the registration between these two injections.
-    // Neither module is copied into or loaded from the game installation.
+    // Keep RDR suspended only for the ScriptHook bootstrap. Do not inject
+    // Frontier while the primary game thread is suspended: ScriptHook's public
+    // scriptRegister() path is designed to run once the game lifecycle exists.
+    // The original RDR1 SDK example registers scripts from DLL_PROCESS_ATTACH;
+    // therefore Frontier is injected only after RDR has resumed.
     if (!injectDll(pi.hProcess, scriptHook.scriptHookPath.string())) {
         std::cerr
             << "[Launcher] [ERROR] Could not load ScriptHookRDR from the Frontier client."
@@ -331,8 +374,36 @@ int main(int argc, char* argv[]) {
 
     std::cout << "[Launcher] [SUCCESS] ScriptHookRDR staged in client directory."
               << std::endl;
-    std::cout << "[Launcher] Loading FrontierMP Core after ScriptHookRDR..."
-              << std::endl;
+    std::cout << "[Launcher] Resuming RDR so ScriptHook can initialize..." << std::endl;
+
+    if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+        std::cerr
+            << "[Launcher] [ERROR] Could not resume RDR.exe. Error="
+            << GetLastError()
+            << std::endl;
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
+
+    // Wait for the real RDR window before injecting Frontier. This gives
+    // ScriptHook its normal startup lifecycle while keeping both modules
+    // outside the game installation.
+    if (!waitForRdrWindow(pi.dwProcessId, 15000)) {
+        std::cerr
+            << "[Launcher] [ERROR] RDR window did not become ready in time."
+            << std::endl;
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
+
+    std::cout << "[Launcher] RDR window ready. Waiting for ScriptHook startup..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+    std::cout << "[Launcher] Injecting FrontierMP Core into running RDR.exe..." << std::endl;
 
     if (!injectDll(pi.hProcess, dllPath.string())) {
         std::cerr
@@ -346,12 +417,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[Launcher] [SUCCESS] FrontierMP Core loaded after ScriptHookRDR."
-              << std::endl;
+    std::cout << "[Launcher] [SUCCESS] FrontierMP Core loaded into running RDR.exe." << std::endl;
 
-    // Reanudar la ejecución del juego
-    std::cout << "[Launcher] Resuming game execution..." << std::endl;
-    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 #endif
