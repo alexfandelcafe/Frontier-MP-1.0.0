@@ -307,29 +307,16 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId
-              << "). Staging FrontierMP before ScriptHookRDR..." << std::endl;
+              << "). Loading ScriptHookRDR before FrontierMP..." << std::endl;
 
-    // Frontier is made resident first. Its worker thread can then observe
-    // ScriptHookRDR as soon as that module appears, which avoids racing the
-    // ScriptHook startup scan while the game main thread is still suspended.
+    // ScriptHookRDR MUST be resident before frontier_core.dll is attached.
+    // Frontier's DLL_PROCESS_ATTACH calls the public scriptRegister() API;
+    // registering at that point matches the normal ScriptHook SDK lifecycle
+    // and places the script in ScriptHook's queue before its worker scans it.
+    //
+    // RDR remains suspended for both LoadLibrary calls, so ScriptHook's own
+    // worker cannot race the registration between these two injections.
     // Neither module is copied into or loaded from the game installation.
-    if (!injectDll(pi.hProcess, dllPath.string())) {
-        std::cerr
-            << "[Launcher] [ERROR] FrontierMP Core injection failed."
-            << std::endl;
-        TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        std::cout << "Press Enter to exit..." << std::endl;
-        std::cin.get();
-        return 1;
-    }
-
-    std::cout << "[Launcher] [SUCCESS] FrontierMP Core staged in client directory."
-              << std::endl;
-    std::cout << "[Launcher] Loading ScriptHookRDR after FrontierMP..."
-              << std::endl;
-
     if (!injectDll(pi.hProcess, scriptHook.scriptHookPath.string())) {
         std::cerr
             << "[Launcher] [ERROR] Could not load ScriptHookRDR from the Frontier client."
@@ -342,7 +329,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[Launcher] [SUCCESS] ScriptHookRDR loaded from client directory."
+    std::cout << "[Launcher] [SUCCESS] ScriptHookRDR staged in client directory."
+              << std::endl;
+    std::cout << "[Launcher] Loading FrontierMP Core after ScriptHookRDR..."
+              << std::endl;
+
+    if (!injectDll(pi.hProcess, dllPath.string())) {
+        std::cerr
+            << "[Launcher] [ERROR] FrontierMP Core injection failed."
+            << std::endl;
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    }
+
+    std::cout << "[Launcher] [SUCCESS] FrontierMP Core loaded after ScriptHookRDR."
               << std::endl;
 
     // Reanudar la ejecución del juego
