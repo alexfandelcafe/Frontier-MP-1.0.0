@@ -123,7 +123,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout
             << "[ScriptBridge] ScriptMain todavía no ha iniciado; "
-               "ScriptBridge esperará a que ScriptHookRDR termine su inicialización."
+               "registro solicitado a través de la API pública de ScriptHookRDR."
             << std::endl;
     }
 
@@ -144,8 +144,8 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Reintentar hasta que ScriptHookRDR consuma la solicitud y ScriptMain
-        // confirme que la fibra Frontier está realmente en ejecución.
+        // Fallback: if ScriptHookRDR was not ready during DLL_PROCESS_ATTACH,
+        // retry from the normal Frontier worker once its public API appears.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
             (++scriptBridgeRetryTicks % 60) == 0) {
             Frontier::Core::ScriptBridge::registerScript(hModule);
@@ -160,10 +160,12 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
-        // Keep DLL_PROCESS_ATTACH minimal. ScriptHook registration is performed
-        // from the Frontier worker after the game resumes, with retry/unregister
-        // handling until ScriptMain actually starts.
         DisableThreadLibraryCalls(hModule);
+
+        // ScriptHookRDR's public SDK registers scripts at DLL_PROCESS_ATTACH.
+        // The launcher already loaded ScriptHookRDR before this DLL, so register
+        // Frontier immediately and let ScriptHook's scheduler start ScriptMain.
+        Frontier::Core::ScriptBridge::registerScript(hModule);
         HANDLE hThread = CreateThread(nullptr, 0,
             (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
