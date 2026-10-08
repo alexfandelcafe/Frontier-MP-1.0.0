@@ -239,7 +239,8 @@ void NetworkManager::update(uint32_t timeoutMs) {
                 m_peers.erase(peer);
 
                 std::cout
-                    << "[NetworkManager] ENet peer disconnected."
+                    << "[NetworkManager] ENet peer disconnected"
+                    << " data=" << event.data
                     << std::endl;
                 break;
             }
@@ -285,17 +286,37 @@ bool NetworkManager::sendPacket(
     ENetPeer* peer =
         reinterpret_cast<ENetPeer*>(player->peer);
 
-    if (enet_peer_send(
-            peer,
-            static_cast<enet_uint8>(channel),
-            packet) != 0) {
+    const int sendResult = enet_peer_send(
+        peer,
+        static_cast<enet_uint8>(channel),
+        packet);
 
+    if (sendResult != 0) {
+        std::cerr
+            << "[NetworkManager] enet_peer_send failed"
+            << " target=" << target
+            << " channel=" << static_cast<uint32_t>(channel)
+            << " bytes=" << stream.size()
+            << " result=" << sendResult
+            << std::endl;
         enet_packet_destroy(packet);
         return false;
     }
 
     enet_host_flush(
         reinterpret_cast<ENetHost*>(m_enetHost));
+
+    std::cout
+        << "[NetworkManager] TX packet target=" << target
+        << " id=0x"
+        << std::hex
+        << (stream.size() >= sizeof(uint16_t)
+            ? *reinterpret_cast<const uint16_t*>(stream.data())
+            : 0)
+        << std::dec
+        << " channel=" << static_cast<uint32_t>(channel)
+        << " bytes=" << stream.size()
+        << std::endl;
 
     return true;
 }
