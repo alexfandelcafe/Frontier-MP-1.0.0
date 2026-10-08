@@ -78,28 +78,84 @@ void PlayerFactory::processPendingSpawn() {
         return;
     }
 
-    std::cout << "[PlayerFactory] Mundo gameplay listo; creando jugador local..." << std::endl;
-    uintptr_t actor = NativeInvoker::invoke<uintptr_t>(
-        Natives::CREATE_PLAYER_ACTOR_IN_LAYOUT,
-        layout,
-        s_pendingModel,
-        s_pendingPosition.x,
-        s_pendingPosition.y,
-        s_pendingPosition.z,
-        s_pendingHeading
-    );
+    uintptr_t actor =
+        s_localActor.load(std::memory_order_acquire);
 
     if (!actor) {
-        std::cerr << "[PlayerFactory] CREATE_PLAYER_ACTOR_IN_LAYOUT no devolvió actor." << std::endl;
+        std::cout
+            << "[PlayerFactory] Mundo gameplay listo; creando jugador local..."
+            << std::endl;
+
+        actor = NativeInvoker::invoke<uintptr_t>(
+            Natives::CREATE_PLAYER_ACTOR_IN_LAYOUT,
+            layout,
+            s_pendingModel,
+            s_pendingPosition.x,
+            s_pendingPosition.y,
+            s_pendingPosition.z,
+            s_pendingHeading
+        );
+
+        if (!actor) {
+            std::cerr
+                << "[PlayerFactory] CREATE_PLAYER_ACTOR_IN_LAYOUT no devolvió actor."
+                << std::endl;
+            return;
+        }
+
+        s_localActor.store(
+            actor,
+            std::memory_order_release);
+
+        enablePlayerControl(true);
+
+        std::cout
+            << "[PlayerFactory] Local player actor creado (Ptr: 0x"
+            << std::hex << actor << std::dec
+            << "). Esperando GET_PLAYER_ACTOR..."
+            << std::endl;
+    }
+
+    // Match the original InitSpawn completion condition:
+    // GET_LOCAL_SLOT() -> GET_PLAYER_ACTOR(slot).
+    const int localSlot =
+        NativeInvoker::invoke<int>(
+            Natives::GET_LOCAL_SLOT);
+
+    if (localSlot < 0) {
         return;
     }
 
-    s_localActor.store(actor, std::memory_order_release);
-    s_spawnPending.store(false, std::memory_order_release);
-    s_modelRequested.store(false, std::memory_order_release);
-    enablePlayerControl(true);
-    std::cout << "[PlayerFactory] Local player actor spawned successfully (Ptr: 0x"
-              << std::hex << actor << std::dec << ")." << std::endl;
+    const uintptr_t playerActor =
+        NativeInvoker::invoke<uintptr_t>(
+            Natives::GET_PLAYER_ACTOR,
+            localSlot);
+
+    if (!playerActor) {
+        if ((s_spawnPollCounter % 120) == 0) {
+            std::cout
+                << "[PlayerFactory] Esperando GET_PLAYER_ACTOR..."
+                << std::endl;
+        }
+        return;
+    }
+
+    s_localActor.store(
+        playerActor,
+        std::memory_order_release);
+
+    s_spawnPending.store(
+        false,
+        std::memory_order_release);
+    s_modelRequested.store(
+        false,
+        std::memory_order_release);
+
+    std::cout
+        << "[PlayerFactory] GET_PLAYER_ACTOR confirmó actor local: 0x"
+        << std::hex << playerActor
+        << std::dec << "."
+        << std::endl;
 }
 
 uintptr_t PlayerFactory::spawnLocalPlayer(const Vector3& position, float heading, ModelHash modelHash) {
@@ -168,52 +224,14 @@ void PlayerFactory::destroyActor(uintptr_t actorPtr) {
 }
 
 uintptr_t PlayerFactory::getLocalPlayerActor() {
-    if (NativeInvoker::isReady()) {
-        const int localSlot =
-            NativeInvoker::invoke<int>(Natives::GET_LOCAL_SLOT);
-        if (localSlot >= 0) {
-            const uintptr_t actor =
-                NativeInvoker::invoke<uintptr_t>(
-                    Natives::GET_PLAYER_ACTOR,
-                    localSlot);
-            if (actor) {
-                s_localActor.store(
-                    actor,
-                    std::memory_order_release);
-            }
-        }
-    }
-
     return s_localActor.load(
         std::memory_order_acquire);
 }
 
 bool PlayerFactory::isLocalPlayerReady() {
-    if (!NativeInvoker::isReady()) {
-        return false;
-    }
-
-    const int localSlot =
-        NativeInvoker::invoke<int>(Natives::GET_LOCAL_SLOT);
-
-    if (localSlot < 0) {
-        return false;
-    }
-
-    const uintptr_t actor =
-        NativeInvoker::invoke<uintptr_t>(
-            Natives::GET_PLAYER_ACTOR,
-            localSlot);
-
-    if (!actor) {
-        return false;
-    }
-
-    s_localActor.store(
-        actor,
-        std::memory_order_release);
-
-    return true;
+    return s_localActor.load(
+        std::memory_order_acquire) != 0 &&
+           !s_spawnPending.load(std::memory_order_acquire);
 }
 
 void PlayerFactory::enablePlayerControl(bool enable) {
