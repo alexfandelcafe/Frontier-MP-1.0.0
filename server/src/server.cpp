@@ -78,7 +78,15 @@ bool Server::initialize(const std::string& configFilePath) {
     }
 
     // 4. Iniciar servidor HTTP para descarga de assets/scripts
-    m_httpServer.start(m_config.host, m_config.httpPort, resolvedResources.string());
+    if (!m_httpServer.start(
+            m_config.host,
+            m_config.httpPort,
+            resolvedResources.string())) {
+        std::cerr
+            << "[Server] Failed to start HTTP resource server on port "
+            << m_config.httpPort << std::endl;
+        return false;
+    }
 
     // 5. Iniciar listener UDP de red
     if (!m_networkManager.start(m_config.host, m_config.port, m_config.maxPlayers)) {
