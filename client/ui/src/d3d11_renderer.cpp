@@ -5,6 +5,7 @@
 #include <d3dcompiler.h>
 #include <iostream>
 #include <chrono>
+#include <mutex>
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -833,10 +834,6 @@ void D3D11Renderer::drawChat() {
 void D3D11Renderer::render(IDXGISwapChain* pSwapChain) {
     if (!m_initialized) return;
 
-    // Pump ENet every rendered frame so ServerData(0x04), disconnects and
-    // subsequent packets are consumed after connect() returns.
-    Net::ClientNetwork::get().update();
-
     UINT backBufferIdx = 0;
     if (m_isD3D12) {
         IDXGISwapChain3* pSwapChain3 = nullptr;
@@ -863,15 +860,71 @@ void D3D11Renderer::render(IDXGISwapChain* pSwapChain) {
 
     beginDraw();
 
-    if (m_showMainMenu) {
+    bool loadingVisible = false;
+    std::string loadingMessage;
+    {
+        std::lock_guard<std::mutex> lock(m_loadingMutex);
+        loadingVisible = m_loadingScreenVisible;
+        loadingMessage = m_loadingMessage;
+    }
+
+    if (loadingVisible) {
+        // Full-screen loading layer; unlike the old CEF stub this is rendered
+        // directly by the active RAGE swap chain.
+        drawRect(
+            0.0f,
+            0.0f,
+            static_cast<float>(m_width),
+            static_cast<float>(m_height),
+            0xF0080808);
+
+        const float panelW = 620.0f;
+        const float panelH = 180.0f;
+        const float panelX =
+            (static_cast<float>(m_width) - panelW) * 0.5f;
+        const float panelY =
+            (static_cast<float>(m_height) - panelH) * 0.5f;
+
+        drawPanel(
+            panelX,
+            panelY,
+            panelW,
+            panelH,
+            0xF01A1A1A,
+            0xFF8A2424,
+            3.0f);
+
+        drawText(
+            panelX + 42.0f,
+            panelY + 38.0f,
+            "FRONTIER MP",
+            0xFF2A8CE4,
+            2.6f);
+
+        drawText(
+            panelX + 42.0f,
+            panelY + 86.0f,
+            loadingMessage.empty()
+                ? "Loading multiplayer world..."
+                : loadingMessage,
+            0xFFFFFFFF,
+            1.5f);
+
+        drawText(
+            panelX + 42.0f,
+            panelY + 128.0f,
+            "Please wait",
+            0xFFAAAAAA,
+            1.1f);
+    } else if (m_showMainMenu) {
         drawMainMenu();
     }
 
-    if (m_showChat || m_chatInputActive) {
+    if (!loadingVisible && (m_showChat || m_chatInputActive)) {
         drawChat();
     }
 
-    if (m_showMainMenu || m_chatInputActive) {
+    if (!loadingVisible && (m_showMainMenu || m_chatInputActive)) {
         drawCursor();
     }
 
@@ -935,6 +988,28 @@ void D3D11Renderer::addChatMessage(const std::string& msg) {
     if (m_chatMessages.size() > 20) {
         m_chatMessages.erase(m_chatMessages.begin());
     }
+}
+
+void D3D11Renderer::setLoadingScreenVisible(
+    bool visible,
+    const std::string& message)
+{
+    std::lock_guard<std::mutex> lock(m_loadingMutex);
+    m_loadingScreenVisible = visible;
+    m_loadingMessage = message;
+
+    std::cout
+        << "[D3D11Renderer] Loading screen "
+        << (visible ? "ON" : "OFF");
+    if (visible && !message.empty()) {
+        std::cout << ": " << message;
+    }
+    std::cout << std::endl;
+}
+
+bool D3D11Renderer::isLoadingScreenVisible() const {
+    std::lock_guard<std::mutex> lock(m_loadingMutex);
+    return m_loadingScreenVisible;
 }
 
 void D3D11Renderer::triggerConnect() {
