@@ -315,6 +315,10 @@ void HttpServer::listenLoop() {
         return;
     }
 
+    // The listener is fully bound and accepting connections.
+    // Signal readiness so start() can return success.
+    m_ready.store(true, std::memory_order_release);
+
     while (m_running) {
         fd_set readSet;
         FD_ZERO(&readSet);
