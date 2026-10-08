@@ -73,6 +73,38 @@ T resolveMangledExport(HMODULE module, const char* token) {
 
     return nullptr;
 }
+template <typename T>
+bool readScriptHookValue(HMODULE module, uintptr_t rva, T& value) {
+    if (!module) {
+        return false;
+    }
+
+    const auto address =
+        reinterpret_cast<const uint8_t*>(module) + rva;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(
+            reinterpret_cast<const void*>(address),
+            &mbi,
+            sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_GUARD) ||
+        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+        return false;
+    }
+
+    __try {
+        value = *reinterpret_cast<const T*>(address);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
+}
+
 size_t readScriptHookVectorCount(HMODULE hookModule, uintptr_t rva) {
     if (!hookModule) {
         return 0;
