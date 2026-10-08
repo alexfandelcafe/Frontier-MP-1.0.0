@@ -16,16 +16,19 @@ enum Channel : uint8_t {
 
 // Protocol Identifiers (Packet IDs)
 enum class PacketId : uint16_t {
-    // 0x00 - 0x0F: Handshake y Conexión
+    // 0x00 - 0x0F: Handshake y Conexión.
+    // ServerData conserva el ID 4 que usa el cliente original como puente
+    // entre ENet y la transición al Loading World.
     HandshakeRequest = 0x01,
     HandshakeResponse = 0x02,
-    ClientReady = 0x03,
-    PlayerJoined = 0x04,
-    PlayerLeft = 0x05,
-    Heartbeat = 0x06,
-    DisconnectReason = 0x07,
+    ClientWelcome = 0x03,
+    ServerData = 0x04,
+    PlayerJoined = 0x05,
+    PlayerLeft = 0x06,
+    Heartbeat = 0x07,
+    DisconnectReason = 0x08,
 
-    // 0x10 - 0x1F: Recursos (Estilo FiveM)
+    // 0x10 - 0x1F: Recursos (el contenido real viaja por HTTP).
     ResourceListRequest = 0x10,
     ResourceListResponse = 0x11,
     ResourceStart = 0x12,
