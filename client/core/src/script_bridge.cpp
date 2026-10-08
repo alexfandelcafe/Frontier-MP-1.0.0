@@ -28,6 +28,9 @@ ScriptHookRunDetourFn s_originalScriptHookRunDetour = nullptr;
 constexpr uintptr_t kScriptHookRunDetourRva = 0x23540;
 constexpr uintptr_t kScriptManagerRecordsBeginRva = 0x20e0f0;
 constexpr uintptr_t kScriptManagerRecordsEndRva = 0x20e0f8;
+// ScriptHookRDR 1.5.2 internal maintenance entry point.
+// FUN_180031970 prepares/starts a registered script fiber before dispatch.
+constexpr uintptr_t kScriptManagerMaintenanceRva = 0x31970;
 constexpr uintptr_t kScriptStartByIdRva = 0x31a20;
 
 template <typename T>
