@@ -8,6 +8,7 @@
 #include <enet/enet.h>
 
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -247,6 +248,25 @@ void ClientNetwork::update() {
         switch (event.type) {
             case ENET_EVENT_TYPE_RECEIVE:
                 if (event.packet && event.packet->dataLength > 0) {
+                    uint16_t packetId = 0;
+                    if (event.packet->dataLength >= sizeof(uint16_t)) {
+                        std::memcpy(
+                            &packetId,
+                            event.packet->data,
+                            sizeof(packetId));
+                    }
+
+                    std::cout
+                        << "[ClientNetwork] ENet RX packet id=0x"
+                        << std::hex
+                        << packetId
+                        << std::dec
+                        << " channel="
+                        << static_cast<uint32_t>(event.channelID)
+                        << " bytes="
+                        << event.packet->dataLength
+                        << std::endl;
+
                     processPacket(
                         static_cast<Protocol::Channel>(event.channelID),
                         event.packet->data,
