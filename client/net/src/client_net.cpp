@@ -45,7 +45,17 @@ bool ClientNetwork::connect(
     uint16_t port,
     const std::string& playerName)
 {
-    if (m_connected || m_enetPeer) {
+    // A duplicate UI click/key event must not tear down an already valid
+    // ENet connection. ServerData(0x04) is processed asynchronously by update().
+    if (m_connected) {
+        std::cout
+            << "[ClientNetwork] Connect ignored: already connected to "
+            << m_serverHost << ":" << m_serverPort << "."
+            << std::endl;
+        return true;
+    }
+
+    if (m_enetPeer || m_enetHost) {
         disconnect();
     }
 
