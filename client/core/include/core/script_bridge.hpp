@@ -8,7 +8,6 @@ namespace Frontier::Core {
 
 class ScriptBridge {
 public:
-    static void registerScriptAtAttach(HMODULE module);
     static void registerScript(HMODULE module);
     static bool isRegistered();
 
