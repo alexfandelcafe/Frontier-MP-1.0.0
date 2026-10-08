@@ -112,10 +112,9 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // 2. Registrar Frontier en ScriptHookRDR lo antes posible.
-    // ScriptHookRDR implementa su propio scheduler/fibers; Frontier no debe
-    // interceptar su Run ni manipular su ScriptManager interno.
-    Frontier::Core::ScriptBridge::initialize(hModule);
+    // Registrar Frontier desde el hilo propio del módulo, fuera de DllMain.
+    // Se prefiere scriptRegisterAdditionalThread para inyección tardía.
+    Frontier::Core::ScriptBridge::registerScript(hModule);
 
     // 3. Inicializar MinHook, DirectX/WndProc y los interceptores gráficos.
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
@@ -145,13 +144,16 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     }
 
     // 6. Bucle de actualización del cliente
+    uint32_t scriptBridgeRetryTicks = 0;
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Cheap retry path for ScriptHook registration if the module was not available during worker startup.
-
-
-        Frontier::Core::ScriptBridge::update(hModule);
+        // Reintentar hasta que ScriptHookRDR consuma la solicitud y ScriptMain
+        // confirme que la fibra Frontier está realmente en ejecución.
+        if (!Frontier::Core::ScriptBridge::isRegistered() &&
+            (++scriptBridgeRetryTicks % 60) == 0) {
+            Frontier::Core::ScriptBridge::registerScript(hModule);
+        }
 
         Frontier::UI::CefManager::get().update();
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
