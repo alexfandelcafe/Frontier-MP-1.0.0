@@ -27,6 +27,7 @@ ScriptWaitFn s_scriptWait = nullptr;
 ScriptManagerMaintenanceFn s_scriptManagerMaintenance = nullptr;
 ScriptStartByIdFn s_scriptStartById = nullptr;
 ScriptHookRunDetourFn s_originalScriptHookRunDetour = nullptr;
+std::atomic<bool> s_scriptPreparationLogged{false};
 
 // ScriptHookRDR 1.5.2 internal scheduler entry points.
 // These RVAs come from the supplied 1.5.2 binary decompilation:
