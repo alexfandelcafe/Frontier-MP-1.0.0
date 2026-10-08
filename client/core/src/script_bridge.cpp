@@ -21,6 +21,11 @@ ScriptRegisterFn s_scriptRegisterFallback = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 ScriptUnregisterFn s_scriptUnregister = nullptr;
 
+// 0 = todavía no registrado, 1 = probando scriptRegister, 2 = probando
+// scriptRegisterAdditionalThread. Cambiamos de ruta solo después de que la
+// anterior haya tenido tiempo de ser consumida por el scheduler de ScriptHook.
+static std::atomic<uint32_t> s_registrationMode{0};
+
 template <typename T>
 T resolveExport(HMODULE module, const char* name) {
     if (!module || !name) return nullptr;
@@ -117,6 +122,14 @@ void resolveScriptHook() {
     }
 
     NativeInvoker::initialize();
+
+    std::cout << "[ScriptBridge] APIs de registro: scriptRegister="
+              << reinterpret_cast<void*>(s_scriptRegisterFallback)
+              << " scriptRegisterAdditionalThread="
+              << reinterpret_cast<void*>(s_scriptRegisterAdditionalThread)
+              << " scriptWait="
+              << reinterpret_cast<void*>(s_scriptWait)
+              << std::endl;
 }
 
 } // namespace
@@ -153,8 +166,26 @@ void ScriptBridge::registerScript(HMODULE module) {
     if (s_registrationInFlight.load(std::memory_order_acquire)) {
         if (now - last < 3000) return;
 
+        const uint32_t previousMode =
+            s_registrationMode.load(std::memory_order_acquire);
+
         if (s_scriptUnregister) {
             s_scriptUnregister(module);
+            std::cout
+                << "[ScriptBridge] Registro anterior retirado antes de "
+                   "cambiar de ruta."
+                << std::endl;
+        }
+
+        // La ruta normal es la API soportada por las versiones modernas de
+        // ScriptHook. Solo usamos la API adicional como fallback real si el
+        // callback registrado por scriptRegister no arrancó.
+        if (previousMode == 1 && s_scriptRegisterAdditionalThread) {
+            s_registrationMode.store(2, std::memory_order_release);
+        } else if (s_scriptRegisterFallback) {
+            s_registrationMode.store(1, std::memory_order_release);
+        } else {
+            s_registrationMode.store(2, std::memory_order_release);
         }
 
         s_registrationInFlight.store(false, std::memory_order_release);
@@ -165,20 +196,33 @@ void ScriptBridge::registerScript(HMODULE module) {
     s_registrationInFlight.store(
         true, std::memory_order_release);
 
-    if (s_scriptRegisterAdditionalThread) {
-        s_scriptRegisterAdditionalThread(
-            module, &ScriptBridge::scriptMain);
+    uint32_t mode = s_registrationMode.load(std::memory_order_acquire);
+    if (mode == 0) {
+        // Primer intento: scriptRegister. Es la ruta compatible con el
+        // ScriptHook actual y con plugins inyectados después del arranque.
+        mode = s_scriptRegisterFallback ? 1u : 2u;
+        s_registrationMode.store(mode, std::memory_order_release);
+    }
 
-        std::cout
-            << "[ScriptBridge] Registro solicitado mediante "
-               "scriptRegisterAdditionalThread."
-            << std::endl;
-    } else {
+    if (mode == 1 && s_scriptRegisterFallback) {
         s_scriptRegisterFallback(
             module, &ScriptBridge::scriptMain);
 
         std::cout
             << "[ScriptBridge] Registro solicitado mediante scriptRegister."
+            << std::endl;
+    } else if (mode == 2 && s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread(
+            module, &ScriptBridge::scriptMain);
+
+        std::cout
+            << "[ScriptBridge] Registro solicitado mediante "
+               "scriptRegisterAdditionalThread (fallback)."
+            << std::endl;
+    } else {
+        s_registrationInFlight.store(false, std::memory_order_release);
+        std::cerr
+            << "[ScriptBridge] No hay una ruta de registro válida disponible."
             << std::endl;
     }
 }
