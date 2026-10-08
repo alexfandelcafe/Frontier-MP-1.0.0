@@ -62,6 +62,7 @@ bool ClientNetwork::connect(
     m_resourceFailed.store(false, std::memory_order_release);
     m_resourceLoading.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
+    m_worldTransitionRequested.store(false, std::memory_order_release);
 
     char modulePath[MAX_PATH] = {};
     HMODULE frontierModule = GetModuleHandleA("frontier_core.dll");
@@ -394,15 +395,27 @@ void ClientNetwork::finishWorldLoadIfReady() {
     }
 
     if (!m_clientWelcomeSent.load(std::memory_order_acquire)) {
-        Core::EngineHooks::requestMultiplayerWorldLoad();
+        if (!m_worldTransitionRequested.exchange(
+                true,
+                std::memory_order_acq_rel)) {
 
-        Core::PlayerFactory::requestLocalPlayerSpawn(
-            m_spawnPosition,
-            m_spawnHeading,
-            m_spawnModel);
+            Core::EngineHooks::requestMultiplayerWorldLoad();
 
-        UI::CefManager::get().setMainMenuVisible(false);
+            Core::PlayerFactory::requestLocalPlayerSpawn(
+                m_spawnPosition,
+                m_spawnHeading,
+                m_spawnModel);
 
+            UI::CefManager::get().setMainMenuVisible(false);
+
+            std::cout
+                << "[ClientNetwork] LoadOnline/InitSpawn solicitado "
+                   "después de DownloadResources."
+                << std::endl;
+        }
+
+        // GET_PLAYER_ACTOR/actor readiness is observed via the thread-safe state
+        // updated by PlayerFactory's ScriptHook script thread.
         if (Core::PlayerFactory::isLocalPlayerReady()) {
             BitStream bs;
             bs.write<uint16_t>(
