@@ -131,6 +131,135 @@ size_t readScriptHookVectorCount(HMODULE hookModule, uintptr_t rva) {
         bytes / sizeof(uintptr_t));
 }
 
+bool readScriptRecordPointer(
+    HMODULE hookModule,
+    uintptr_t vectorRva,
+    uintptr_t& record)
+{
+    record = 0;
+    if (!hookModule) {
+        return false;
+    }
+
+    uintptr_t begin = 0;
+    uintptr_t end = 0;
+
+    if (!readScriptHookValue(hookModule, vectorRva, begin) ||
+        !readScriptHookValue(
+            hookModule, vectorRva + sizeof(uintptr_t), end) ||
+        !begin || end <= begin ||
+        (end - begin) < sizeof(uintptr_t)) {
+        return false;
+    }
+
+    __try {
+        record = *reinterpret_cast<const uintptr_t*>(begin);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        record = 0;
+        return false;
+    }
+
+    return record != 0;
+}
+
+void logRegisteredScriptRecord(
+    HMODULE hookModule,
+    HMODULE frontierModule)
+{
+    uintptr_t record = 0;
+    if (!readScriptRecordPointer(
+            hookModule, 0x20e108, record)) {
+        std::cout
+            << "[ScriptBridge] No se pudo leer el primer registro de "
+               "ScriptHookRDR."
+            << std::endl;
+        return;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(
+            reinterpret_cast<const void*>(record),
+            &mbi,
+            sizeof(mbi)) != sizeof(mbi) ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_GUARD) ||
+        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+        std::cout
+            << "[ScriptBridge] El primer registro de ScriptHookRDR no apunta "
+               "a memoria legible."
+            << std::endl;
+        return;
+    }
+
+    const uintptr_t frontierBase =
+        reinterpret_cast<uintptr_t>(frontierModule);
+    const uintptr_t scriptMain =
+        reinterpret_cast<uintptr_t>(&ScriptBridge::scriptMain);
+
+    uintptr_t moduleField = 0;
+    uintptr_t fiberField = 0;
+    uint32_t scriptId = 0;
+
+    __try {
+        // Known fields from the 1.5.2 record layout observed in the
+        // decompilation: +0x68 = fiber, +0x8c = ScriptId.
+        fiberField =
+            *reinterpret_cast<const uintptr_t*>(record + 0x68);
+        scriptId =
+            *reinterpret_cast<const uint32_t*>(record + 0x8c);
+
+        // Look for the Frontier module handle and exact ScriptMain pointer
+        // without assuming their field offsets.
+        for (uintptr_t off = 0;
+             off <= 0xB8;
+             off += sizeof(uintptr_t)) {
+            uintptr_t value =
+                *reinterpret_cast<const uintptr_t*>(record + off);
+
+            if (value == frontierBase) {
+                moduleField = off;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        std::cout
+            << "[ScriptBridge] Excepción leyendo el registro de "
+               "ScriptHookRDR; se omite el diagnóstico."
+            << std::endl;
+        return;
+    }
+
+    uintptr_t callbackField = 0;
+    __try {
+        for (uintptr_t off = 0;
+             off <= 0xB8;
+             off += sizeof(uintptr_t)) {
+            const uintptr_t value =
+                *reinterpret_cast<const uintptr_t*>(record + off);
+
+            if (value == scriptMain) {
+                callbackField = off;
+                break;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        callbackField = 0;
+    }
+
+    std::cout
+        << "[ScriptBridge] Registro ScriptHookRDR: record=0x"
+        << std::hex << record
+        << " moduleFieldOffset="
+        << moduleField
+        << " scriptMainFieldOffset="
+        << callbackField
+        << " fiber=0x"
+        << fiberField
+        << " scriptId=0x"
+        << scriptId
+        << std::dec
+        << std::endl;
+}
+
 
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
@@ -318,6 +447,8 @@ void ScriptBridge::update(HMODULE module) {
             << scriptStacks
             << ", scriptMainStarted=0."
             << std::endl;
+        logRegisteredScriptRecord(
+            hookModule, module);
     }
 
     // Normally registration succeeds during initialize(). This remains a
