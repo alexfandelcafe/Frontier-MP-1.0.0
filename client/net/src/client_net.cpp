@@ -37,6 +37,9 @@ ClientNetwork& ClientNetwork::get() {
 
 ClientNetwork::~ClientNetwork() {
     disconnect();
+    if (m_networkThread.joinable()) {
+        m_networkThread.join();
+    }
     if (m_resourceThread.joinable()) {
         m_resourceThread.join();
     }
@@ -66,17 +69,17 @@ bool ClientNetwork::connect(
     }
 
     m_connectRequested.store(true, std::memory_order_release);
+    startNetworkThread();
 
     std::cout
         << "[ClientNetwork] ENet connection request queued for "
         << host << ":" << port
         << " as '" << playerName
-        << "'; ENet I/O will run exclusively on ClientNetwork::update()."
+        << "'; dedicated ENet thread will service transport."
         << std::endl;
 
     return true;
 }
-
 void ClientNetwork::startPendingConnection() {
     if (!m_connectRequested.exchange(
             false,
@@ -191,16 +194,12 @@ void ClientNetwork::disconnect() {
     m_connectRequested.store(false, std::memory_order_release);
     m_connecting.store(false, std::memory_order_release);
     m_connected.store(false, std::memory_order_release);
+    m_clientWelcomeQueued.store(false, std::memory_order_release);
+    m_networkRunning.store(false, std::memory_order_release);
 
-    if (m_enetPeer) {
-        enet_peer_disconnect(m_enetPeer, 0);
-        enet_host_flush(m_enetHost);
-        m_enetPeer = nullptr;
-    }
-
-    if (m_enetHost) {
-        enet_host_destroy(m_enetHost);
-        m_enetHost = nullptr;
+    if (m_networkThread.get_id() != std::this_thread::get_id() &&
+        m_networkThread.joinable()) {
+        m_networkThread.join();
     }
 
     if (m_resourceThread.joinable()) {
@@ -217,14 +216,149 @@ void ClientNetwork::disconnect() {
     m_connectDeadline = {};
     UI::D3D11Renderer::get().setLoadingScreenVisible(false, "");
     m_localPlayerObserved.store(false, std::memory_order_release);
-    m_localPlayerId = INVALID_PLAYER_ID;
-    m_remotePlayers.clear();
+    m_localPlayerId = INVALID_PLAYER_ID;void ClientNetwork::update() {
+    // ENet I/O is exclusively owned by networkLoop(). This function only
+    // advances game-thread state such as the multiplayer loading gate.
+    if (m_resourcesReady.load(std::memory_order_acquire)) {
+        finishWorldLoadIfReady();
+    }
 }
 
-void ClientNetwork::update() {
+void ClientNetwork::startNetworkThread() {
+    bool expected = false;
+    if (!m_networkRunning.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel)) {
+        return;
+    }
+
+    m_networkThread = std::thread(
+        &ClientNetwork::networkLoop,
+        this);
+}
+
+void ClientNetwork::networkLoop() {
     startPendingConnection();
 
     if (!m_enetHost) {
+        m_networkRunning.store(false, std::memory_order_release);
+        return;
+    }
+
+    while (m_networkRunning.load(std::memory_order_acquire)) {
+        ENetEvent event{};
+        while (enet_host_service(m_enetHost, &event, 0) > 0) {
+            switch (event.type) {
+                case ENET_EVENT_TYPE_CONNECT: {
+                    m_connecting.store(false, std::memory_order_release);
+                    m_connected.store(true, std::memory_order_release);
+
+                    BitStream bs;
+                    bs.write<uint16_t>(
+                        static_cast<uint16_t>(
+                            Protocol::PacketId::HandshakeRequest));
+                    bs.writeString(m_playerName);
+                    bs.write<ModelHash>(m_spawnModel);
+
+                    sendPacket(
+                        Protocol::ChannelReliable,
+                        bs,
+                        true);
+
+                    std::cout
+                        << "[ClientNetwork] ENet transport connected. "
+                           "HandshakeRequest sent; waiting for ServerData packet 4."
+                        << std::endl;
+                    break;
+                }
+
+                case ENET_EVENT_TYPE_RECEIVE:
+                    if (event.packet &&
+                        event.packet->dataLength > 0) {
+
+                        uint16_t packetId = 0;
+                        if (event.packet->dataLength >= sizeof(uint16_t)) {
+                            std::memcpy(
+                                &packetId,
+                                event.packet->data,
+                                sizeof(packetId));
+                        }
+
+                        std::cout
+                            << "[ClientNetwork] ENet RX packet id=0x"
+                            << std::hex
+                            << packetId
+                            << std::dec
+                            << " channel="
+                            << static_cast<uint32_t>(event.channelID)
+                            << " bytes="
+                            << event.packet->dataLength
+                            << std::endl;
+
+                        processPacket(
+                            static_cast<Protocol::Channel>(
+                                event.channelID),
+                            event.packet->data,
+                            event.packet->dataLength);
+                    }
+
+                    if (event.packet) {
+                        enet_packet_destroy(event.packet);
+                    }
+                    break;
+
+                case ENET_EVENT_TYPE_DISCONNECT:
+                    std::cerr
+                        << "[ClientNetwork] ENet disconnected from server."
+                        << " data="
+                        << event.data
+                        << std::endl;
+                    m_connecting.store(false, std::memory_order_release);
+                    m_connected.store(false, std::memory_order_release);
+                    m_enetPeer = nullptr;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        if (m_clientWelcomeQueued.exchange(
+                false,
+                std::memory_order_acq_rel) &&
+            m_connected.load(std::memory_order_acquire) &&
+            m_enetPeer) {
+
+            BitStream bs;
+            bs.write<uint16_t>(
+                static_cast<uint16_t>(
+                    Protocol::PacketId::ClientWelcome));
+            bs.write<ModelHash>(m_spawnModel);
+            bs.writeString(m_playerName);
+            bs.writeVector3(m_spawnPosition);
+            bs.write<float>(0.0f);
+            bs.write<float>(0.0f);
+            bs.write<float>(m_spawnHeading);
+
+            sendPacket(
+                Protocol::ChannelReliable,
+                bs,
+                true);
+
+            m_clientWelcomeSent.store(
+                true,
+                std::memory_order_release);
+
+            std::cout
+                << "[ClientNetwork] ClientWelcome packet 0 enviado por el hilo ENet."
+                << std::endl;
+
+            UI::D3D11Renderer::get().setLoadingScreenVisible(
+                true,
+                "Finalizing multiplayer session...");
+        }
+
         if (m_connecting.load(std::memory_order_acquire) &&
             std::chrono::steady_clock::now() >= m_connectDeadline) {
 
@@ -237,111 +371,31 @@ void ClientNetwork::update() {
 
             m_connecting.store(false, std::memory_order_release);
             m_connected.store(false, std::memory_order_release);
-        }
-        return;
-    }
 
-    ENetEvent event{};
-    while (enet_host_service(m_enetHost, &event, 0) > 0) {
-        switch (event.type) {
-            case ENET_EVENT_TYPE_CONNECT: {
-                m_connecting.store(false, std::memory_order_release);
-                m_connected.store(true, std::memory_order_release);
-
-                BitStream bs;
-                bs.write<uint16_t>(
-                    static_cast<uint16_t>(
-                        Protocol::PacketId::HandshakeRequest));
-                bs.writeString(m_playerName);
-                bs.write<ModelHash>(m_spawnModel);
-
-                sendPacket(
-                    Protocol::ChannelReliable,
-                    bs,
-                    true);
-
-                std::cout
-                    << "[ClientNetwork] ENet transport connected. "
-                       "HandshakeRequest sent; waiting for ServerData packet 4."
-                    << std::endl;
-                break;
-            }
-
-            case ENET_EVENT_TYPE_RECEIVE:
-                if (event.packet &&
-                    event.packet->dataLength > 0) {
-
-                    uint16_t packetId = 0;
-                    if (event.packet->dataLength >= sizeof(uint16_t)) {
-                        std::memcpy(
-                            &packetId,
-                            event.packet->data,
-                            sizeof(packetId));
-                    }
-
-                    std::cout
-                        << "[ClientNetwork] ENet RX packet id=0x"
-                        << std::hex
-                        << packetId
-                        << std::dec
-                        << " channel="
-                        << static_cast<uint32_t>(event.channelID)
-                        << " bytes="
-                        << event.packet->dataLength
-                        << std::endl;
-
-                    processPacket(
-                        static_cast<Protocol::Channel>(
-                            event.channelID),
-                        event.packet->data,
-                        event.packet->dataLength);
-                }
-
-                if (event.packet) {
-                    enet_packet_destroy(event.packet);
-                }
-                break;
-
-            case ENET_EVENT_TYPE_DISCONNECT:
-                std::cerr
-                    << "[ClientNetwork] ENet disconnected from server."
-                    << " data="
-                    << event.data
-                    << std::endl;
-                m_connecting.store(false, std::memory_order_release);
-                m_connected.store(false, std::memory_order_release);
+            if (m_enetHost) {
+                enet_host_destroy(m_enetHost);
+                m_enetHost = nullptr;
                 m_enetPeer = nullptr;
-                break;
-
-            default:
-                break;
+            }
+            break;
         }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(5));
     }
 
-    if (m_connecting.load(std::memory_order_acquire) &&
-        std::chrono::steady_clock::now() >= m_connectDeadline) {
-
-        std::cerr
-            << "[ClientNetwork] ENet connection timeout/refused for "
-            << m_serverHost
-            << ":"
-            << m_serverPort
-            << std::endl;
-
-        m_connecting.store(false, std::memory_order_release);
-        m_connected.store(false, std::memory_order_release);
-
-        if (m_enetHost) {
-            enet_host_destroy(m_enetHost);
-            m_enetHost = nullptr;
-            m_enetPeer = nullptr;
-        }
+    if (m_enetHost) {
+        enet_host_flush(m_enetHost);
+        enet_host_destroy(m_enetHost);
+        m_enetHost = nullptr;
+        m_enetPeer = nullptr;
     }
 
-    if (m_resourcesReady.load(std::memory_order_acquire)) {
-        finishWorldLoadIfReady();
-    }
+    m_connecting.store(false, std::memory_order_release);
+    m_connected.store(false, std::memory_order_release);
+    m_networkRunning.store(false, std::memory_order_release);
 }
+
 void ClientNetwork::sendPacket(
     Protocol::Channel channel,
     const BitStream& bs,
@@ -545,45 +599,22 @@ void ClientNetwork::finishWorldLoadIfReady() {
             std::chrono::milliseconds(1000);
     }
 
-    if (!m_clientWelcomeSent.load(std::memory_order_acquire)) {
+    if (!m_clientWelcomeSent.load(std::memory_order_acquire) &&
+        !m_clientWelcomeQueued.load(std::memory_order_acquire)) {
+
         if (std::chrono::steady_clock::now() <
             m_clientWelcomeDeadline) {
             return;
         }
 
-        bool expected = false;
-        if (!m_clientWelcomeSent.compare_exchange_strong(
-                expected,
-                true,
-                std::memory_order_acq_rel,
-                std::memory_order_acquire)) {
-            return;
-        }
-
-        BitStream bs;
-        bs.write<uint16_t>(
-            static_cast<uint16_t>(
-                Protocol::PacketId::ClientWelcome));
-        bs.write<ModelHash>(m_spawnModel);
-        bs.writeString(m_playerName);
-        bs.writeVector3(m_spawnPosition);
-        bs.write<float>(0.0f);
-        bs.write<float>(0.0f);
-        bs.write<float>(m_spawnHeading);
-
-        sendPacket(
-            Protocol::ChannelReliable,
-            bs,
-            true);
+        m_clientWelcomeQueued.store(
+            true,
+            std::memory_order_release);
 
         std::cout
-            << "[ClientNetwork] ClientWelcome packet 0 enviado después "
-               "de LoadAllResources + 1000 ms."
+            << "[ClientNetwork] ClientWelcome encolado para el hilo ENet "
+               "después de LoadAllResources + 1000 ms."
             << std::endl;
-
-        UI::D3D11Renderer::get().setLoadingScreenVisible(
-            true,
-            "Finalizing multiplayer session...");
     }
 
     // Final stage from the original InitSpawn fiber:
