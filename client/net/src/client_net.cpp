@@ -169,6 +169,22 @@ bool ClientNetwork::connect(
         << "[ClientNetwork] ENet connection timeout/refused for "
         << host << ":" << port << std::endl;
 
+    if (ResourceClient::httpGetStatus(host, m_httpPort)) {
+        std::cerr
+            << "[ClientNetwork] HTTP control server responde en "
+            << host << ":" << m_httpPort
+            << ", pero ENet UDP no acepta conexiones en "
+            << host << ":" << port
+            << ". El problema está en el listener UDP/server build."
+            << std::endl;
+    } else {
+        std::cerr
+            << "[ClientNetwork] HTTP control server tampoco responde en "
+            << host << ":" << m_httpPort
+            << ". Verifica que frontier_server.exe esté ejecutándose."
+            << std::endl;
+    }
+
     if (m_enetHost) {
         enet_host_destroy(m_enetHost);
         m_enetHost = nullptr;
