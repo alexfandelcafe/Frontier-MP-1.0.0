@@ -74,6 +74,61 @@ T resolveMangledExport(HMODULE module, const char* token) {
     return nullptr;
 }
 
+template <typename T>
+bool readScriptHookValue(HMODULE module, uintptr_t rva, T& value) {
+    if (!module) {
+        return false;
+    }
+
+    const auto address =
+        reinterpret_cast<const uint8_t*>(module) + rva;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(
+            reinterpret_cast<const void*>(address),
+            &mbi,
+            sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_GUARD) ||
+        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+        return false;
+    }
+
+    __try {
+        value = *reinterpret_cast<const T*>(address);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
+}
+
+bool isScriptHookSchedulerReady(HMODULE hookModule) {
+    // ScriptHookRDR 1.5.2 decompilation:
+    //   DAT_18020e4a8 = resolved rage::scrThread::Run target
+    //   DAT_18020e3f0 = original Run trampoline after hook installation
+    //   DAT_18020e400 = original Reset trampoline
+    //   DAT_18020e408 = original ConvertThreadToFiber trampoline
+    // We only READ these globals as a passive initialization signal.
+    uintptr_t runTarget = 0;
+    uintptr_t originalRun = 0;
+    uintptr_t originalReset = 0;
+    uintptr_t originalConvertFiber = 0;
+
+    return readScriptHookValue(hookModule, 0x20e4a8, runTarget) &&
+           readScriptHookValue(hookModule, 0x20e3f0, originalRun) &&
+           readScriptHookValue(hookModule, 0x20e400, originalReset) &&
+           readScriptHookValue(hookModule, 0x20e408, originalConvertFiber) &&
+           runTarget != 0 &&
+           originalRun != 0 &&
+           originalReset != 0 &&
+           originalConvertFiber != 0;
+}
+
+
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
 
@@ -155,6 +210,34 @@ void ScriptBridge::tryRegister(HMODULE module) {
         return;
     }
 
+    // Do not register while ScriptHookRDR is still inside its asynchronous
+    // initialization. Its script scheduler becomes safe once all four
+    // scheduler hooks have published their original pointers.
+    if (!isScriptHookSchedulerReady(hookModule)) {
+        static std::atomic<bool> waitLogged{false};
+        if (!waitLogged.exchange(true, std::memory_order_acq_rel)) {
+            std::cout
+                << "[ScriptBridge] ScriptHookRDR cargado; esperando a que "
+                   "termine la inicialización de Run/Reset/ConvertThreadToFiber."
+                << std::endl;
+        }
+        return;
+    }
+
+    static std::atomic<bool> readyLogged{false};
+    if (!readyLogged.exchange(true, std::memory_order_acq_rel)) {
+        uintptr_t runTarget = 0;
+        uintptr_t originalRun = 0;
+        readScriptHookValue(hookModule, 0x20e4a8, runTarget);
+        readScriptHookValue(hookModule, 0x20e3f0, originalRun);
+
+        std::cout
+            << "[ScriptBridge] Scheduler ScriptHookRDR listo: Run target=0x"
+            << std::hex << runTarget
+            << " original=0x" << originalRun
+            << std::dec << std::endl;
+    }
+
     if (s_registrationRequested.exchange(
             true, std::memory_order_acq_rel)) {
         return;
@@ -162,7 +245,7 @@ void ScriptBridge::tryRegister(HMODULE module) {
 
     std::cout
         << "[ScriptBridge] Registrando Frontier mediante scriptRegister "
-           "del scheduler normal de ScriptHookRDR."
+           "después de la inicialización de ScriptHookRDR."
         << std::endl;
 
     s_scriptRegister(module, &ScriptBridge::scriptMain);
