@@ -3,7 +3,7 @@
 
 host = "0.0.0.0"
 port = 4674
-http_port = 4675
+http_port = 4674
 
 server_name = "FrontierMP Official Test Server - 1899"
 max_players = 32
