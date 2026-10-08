@@ -17,7 +17,7 @@ private:
 
     static inline std::atomic<bool> s_registered{false};
     static inline std::atomic<bool> s_warnedUnavailable{false};
-    static inline std::atomic<bool> s_registrationRequested{false};
+    static inline std::atomic<bool> s_registrationIssued{false};
 };
 
 } // namespace Frontier::Core
