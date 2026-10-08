@@ -67,12 +67,16 @@ bool ClientNetwork::connect(
     m_playerName = playerName;
     m_serverHost = host;
     m_serverPort = port;
+    m_httpPort = port; // Original RDRMP HTTPClient reuses ENet host/port.
     m_localPlayerId = INVALID_PLAYER_ID;
     m_resourcesReady.store(false, std::memory_order_release);
     m_resourceFailed.store(false, std::memory_order_release);
     m_resourceLoading.store(false, std::memory_order_release);
+    m_loadResourcesStarted.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
+    m_loadingScreenVisible.store(false, std::memory_order_release);
+    m_clientWelcomeDeadline = {};
 
     char modulePath[MAX_PATH] = {};
     HMODULE frontierModule = GetModuleHandleA("frontier_core.dll");
@@ -225,8 +229,12 @@ void ClientNetwork::disconnect() {
     m_resourceLoading.store(false, std::memory_order_release);
     m_resourcesReady.store(false, std::memory_order_release);
     m_resourceFailed.store(false, std::memory_order_release);
+    m_loadResourcesStarted.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
+    m_loadingScreenVisible.store(false, std::memory_order_release);
+    m_clientWelcomeDeadline = {};
+    UI::D3D11Renderer::get().setLoadingScreenVisible(false, "");
     m_localPlayerObserved.store(false, std::memory_order_release);
     m_localPlayerId = INVALID_PLAYER_ID;
     m_remotePlayers.clear();
@@ -387,12 +395,26 @@ void ClientNetwork::beginServerDataLoading() {
 
     m_resourceThread = std::thread(
         [this, host, httpPort, cacheRoot]() {
-            const bool ok =
+            const bool downloaded =
                 ResourceClient::downloadAll(
                     host,
                     httpPort,
                     cacheRoot);
 
+            uint32_t resourceCount = 0;
+            uint32_t fileCount = 0;
+            const bool loaded =
+                downloaded &&
+                ResourceClient::loadAllResources(
+                    cacheRoot,
+                    resourceCount,
+                    fileCount);
+
+            const bool ok = downloaded && loaded;
+
+            m_loadResourcesStarted.store(
+                loaded,
+                std::memory_order_release);
             m_resourceFailed.store(
                 !ok,
                 std::memory_order_release);
@@ -405,12 +427,15 @@ void ClientNetwork::beginServerDataLoading() {
 
             if (ok) {
                 std::cout
-                    << "[ClientNetwork] DownloadResources completado; "
-                       "LoadOnline/InitSpawn pueden continuar."
+                    << "[ClientNetwork] DownloadResources + "
+                       "LoadAllResources completados; "
+                       "DoesAllResourcesAreLoaded() = true."
+                    << " recursos=" << resourceCount
+                    << " archivos=" << fileCount
                     << std::endl;
             } else {
                 std::cerr
-                    << "[ClientNetwork] Resource download failed; "
+                    << "[ClientNetwork] Resource loading failed; "
                        "world loading aborted."
                     << std::endl;
             }
@@ -426,11 +451,21 @@ void ClientNetwork::finishWorldLoadIfReady() {
             true,
             std::memory_order_acq_rel)) {
 
-        // Equivalente a las dos fibers del cliente original: la transición
-        // comienza solo después de DownloadResources y el spawn queda
-        // programado en el ScriptHook thread.
+        std::cout
+            << "[ClientNetwork] LoadOnline/InitSpawn: iniciando "
+               "transición de mundo después de "
+               "DoesAllResourcesAreLoaded()."
+            << std::endl;
+
+        UI::D3D11Renderer::get().setLoadingScreenVisible(
+            true,
+            "Loading multiplayer world...");
+
+        // These are the verified RDRMP transition commands used by the
+        // original LoadOnline path.
         Core::EngineHooks::requestMultiplayerWorldLoad();
 
+        // InitSpawn runs alongside LoadOnline in the original client.
         Core::PlayerFactory::requestLocalPlayerSpawn(
             m_spawnPosition,
             m_spawnHeading,
@@ -438,17 +473,27 @@ void ClientNetwork::finishWorldLoadIfReady() {
 
         UI::CefManager::get().setMainMenuVisible(false);
 
-        std::cout
-            << "[ClientNetwork] LoadOnline/InitSpawn solicitado "
-               "después de DownloadResources."
-            << std::endl;
+        // FUN_180002F50 waits one second after resource completion before
+        // sending ClientWelcome.
+        m_clientWelcomeDeadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(1000);
     }
 
-    // En el cliente original ClientWelcome se envía al terminar la carga de
-    // recursos; después la misma fiber espera GET_PLAYER_ACTOR.
-    if (!m_clientWelcomeSent.exchange(
-            true,
-            std::memory_order_acq_rel)) {
+    if (!m_clientWelcomeSent.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() <
+            m_clientWelcomeDeadline) {
+            return;
+        }
+
+        bool expected = false;
+        if (!m_clientWelcomeSent.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return;
+        }
 
         BitStream bs;
         bs.write<uint16_t>(
@@ -467,23 +512,30 @@ void ClientNetwork::finishWorldLoadIfReady() {
             true);
 
         std::cout
-            << "[ClientNetwork] ClientWelcome enviado después de "
-               "DownloadResources."
+            << "[ClientNetwork] ClientWelcome packet 0 enviado después "
+               "de LoadAllResources + 1000 ms."
             << std::endl;
+
+        UI::D3D11Renderer::get().setLoadingScreenVisible(
+            true,
+            "Finalizing multiplayer session...");
     }
 
-    // Equivalente a DoesAllResourcesAreLoaded() + GET_PLAYER_ACTOR: no se
-    // toca ningún native aquí; PlayerFactory publica el resultado desde su
-    // ScriptHook thread.
+    // Final stage from the original InitSpawn fiber:
+    // wait until GET_PLAYER_ACTOR reports a valid local actor.
     if (Core::PlayerFactory::isLocalPlayerReady() &&
         !m_localPlayerObserved.exchange(
             true,
             std::memory_order_acq_rel)) {
 
         std::cout
-            << "[ClientNetwork] GET_PLAYER_ACTOR listo; "
-               "jugador local observado. In Multiplayer."
+            << "[ClientNetwork] GET_PLAYER_ACTOR válido; "
+               "actor local confirmado. In Multiplayer."
             << std::endl;
+
+        UI::D3D11Renderer::get().setLoadingScreenVisible(
+            false,
+            "");
     }
 }
 
@@ -521,7 +573,9 @@ void ClientNetwork::processPacket(
                 m_localPlayerId = bs.read<PlayerId>();
                 const std::string serverName = bs.readString();
                 const std::string version = bs.readString();
-                m_httpPort = bs.read<uint16_t>();
+                // HTTPClient::Connect uses the same host/port as ENet; the
+                // original ServerData does not carry a separate HTTP port.
+                m_httpPort = m_serverPort;
                 m_spawnModel = bs.read<ModelHash>();
                 m_spawnPosition = bs.readVector3();
                 m_spawnHeading = bs.read<float>();
