@@ -114,10 +114,7 @@ void __cdecl ScriptBridge::scriptMain() {
     s_registered.store(
         true,
         std::memory_order_release);
-    s_registrationRequested.store(
-        false,
-        std::memory_order_release);
-    s_registrationInFlight.store(
+    s_registrationIssued.store(
         false,
         std::memory_order_release);
     resolveRuntimeApi();
