@@ -34,6 +34,7 @@ public:
     static HRESULT WINAPI HookedCreateSwapChainForHwnd(IDXGIFactory2* pFactory, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain);
 
     static HWND getGameWindow() { return s_gameHwnd; }
+    static bool isGameRenderReady();
     static void setupSandboxWorld();
 
 private:
