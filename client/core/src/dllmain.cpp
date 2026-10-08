@@ -144,10 +144,10 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Fallback: if ScriptHookRDR was not ready during DLL_PROCESS_ATTACH,
-        // retry from the normal Frontier worker once its public API appears.
+        // Once RDR has produced a live game swap chain, ScriptHook has a
+        // running game lifecycle to consume the public script registration.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
-            (++scriptBridgeRetryTicks % 60) == 0) {
+            (++scriptBridgeRetryTicks % 30) == 0) {
             Frontier::Core::ScriptBridge::registerScript(hModule);
         }
 
@@ -162,10 +162,11 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
 
-        // ScriptHookRDR's public SDK registers scripts at DLL_PROCESS_ATTACH.
-        // The launcher already loaded ScriptHookRDR before this DLL, so register
-        // Frontier immediately and let ScriptHook's scheduler start ScriptMain.
-        Frontier::Core::ScriptBridge::registerScript(hModule);
+        // Do not call ScriptHook from inside DLL_PROCESS_ATTACH. The launcher
+        // deliberately injects Frontier while RDR's primary thread is still
+        // suspended; ScriptHook's scheduler is not ready at this point.
+        // FrontierMainThread waits for a live render lifecycle before calling
+        // the public registration API.
         HANDLE hThread = CreateThread(nullptr, 0,
             (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
