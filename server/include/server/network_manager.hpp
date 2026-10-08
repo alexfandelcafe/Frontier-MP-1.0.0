@@ -6,6 +6,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 
 namespace Frontier::Server {
 
@@ -28,13 +29,20 @@ public:
 
 private:
     void processPacket(PlayerId senderId, Protocol::Channel channel, const uint8_t* data, size_t size);
+    PlayerId ensurePlayerForPeer(void* peer, const std::string& name = {});
+
 
     Server& m_server;
     std::string m_host;
     uint16_t m_port{DEFAULT_SERVER_PORT};
     uint32_t m_maxClients{MAX_PLAYERS_LIMIT};
     bool m_running{false};
-    void* m_enetHost{nullptr}; // Pointer to ENetHost
+    void* m_enetHost{nullptr}; // ENetHost*
+    struct PeerState {
+        void* peer{nullptr}; // ENetPeer*
+        PlayerId playerId{INVALID_PLAYER_ID};
+    };
+    std::unordered_map<void*, std::unique_ptr<PeerState>> m_peers;
 };
 
 } // namespace Frontier::Server
