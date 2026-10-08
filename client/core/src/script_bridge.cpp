@@ -122,9 +122,12 @@ void ScriptBridge::registerScript(HMODULE module) {
         s_registrationInFlight.store(
             false,
             std::memory_order_release);
+        s_lastRetryTick.store(
+            0,
+            std::memory_order_release);
     }
 
-    if (last != 0 && now - last < kRegistrationRetryMs) {
+    if (s_lastRetryTick.load(std::memory_order_acquire) != 0) {
         return;
     }
 
