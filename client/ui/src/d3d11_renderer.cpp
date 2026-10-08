@@ -792,7 +792,7 @@ void D3D11Renderer::drawMainMenu() {
         // Tab 2: Ajustes
         drawText(winX + 45.0f, contentY + 25.0f, "CONFIGURACION DEL FRAMEWORK", 0xFF4080DF, 1.4f);
         drawText(winX + 45.0f, contentY + 65.0f, "Motor Grafico: DirectX 12 (Pipeline D3D11On12 Acelerado)", 0xFF50D050, 1.2f);
-        drawText(winX + 45.0f, contentY + 95.0f, "Red: ENet UDP Port 4674 | Asset Streaming HTTP Port 4675", 0xFFCCCCCC, 1.2f);
+        drawText(winX + 45.0f, contentY + 95.0f, "Red: ENet UDP + HTTP TCP Port 4674", 0xFFCCCCCC, 1.2f);
         drawText(winX + 45.0f, contentY + 125.0f, "Scripting Engine: Lua 5.4 con Event Dispatcher FiveM", 0xFFCCCCCC, 1.2f);
         drawText(winX + 45.0f, contentY + 155.0f, "Mundo Sandbox: Limpieza de misiones, encuentros y peds singleplayer", 0xFFCCCCCC, 1.2f);
         drawText(winX + 45.0f, contentY + 205.0f, "Controles del Menú:", 0xFF4080DF, 1.3f);
