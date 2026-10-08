@@ -348,7 +348,7 @@ void ClientNetwork::beginServerDataLoading() {
 
     std::cout
         << "[ClientNetwork] ServerData válido. Iniciando worker "
-           "HTTP DownloadResources("cache\\")..."
+           "HTTP DownloadResources(\"cache\\\\\")..."
         << std::endl;
 
     if (m_resourceThread.joinable()) {
