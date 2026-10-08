@@ -153,6 +153,8 @@ bool readFrontierScriptRecord(
 
     const uintptr_t frontierBase =
         reinterpret_cast<uintptr_t>(frontierModule);
+    const uintptr_t scriptMain =
+        reinterpret_cast<uintptr_t>(&ScriptBridge::scriptMain);
 
     for (uintptr_t cursor = begin;
          cursor < end;
@@ -199,15 +201,46 @@ bool readFrontierScriptRecord(
             continue;
         }
 
-        // Accept the registered Frontier record even while ScriptHook has not
-        // yet assigned a ScriptId or created its fiber. Those fields are the
-        // responsibility of the ScriptManager preparation pass.
-        if (recordModule != frontierModule ||
-            recordCallback == 0) {
+        bool moduleMatch =
+            reinterpret_cast<uintptr_t>(recordModule) == frontierBase;
+        bool callbackMatch = recordCallback == scriptMain;
+
+        // The decompilation gives +0x00/+0x60 for these fields, but use a
+        // value-based scan as a fallback so a minor structure-layout mismatch
+        // cannot hide the registered Frontier record from the dispatcher.
+        if (!moduleMatch || !callbackMatch) {
+            __try {
+                for (uintptr_t off = 0;
+                     off <= 0xB8;
+                     off += sizeof(uintptr_t)) {
+
+                    const uintptr_t value =
+                        *reinterpret_cast<const uintptr_t*>(candidate + off);
+
+                    if (value == frontierBase) {
+                        moduleMatch = true;
+                    }
+                    if (value == scriptMain) {
+                        callbackMatch = true;
+                        if (!recordCallback) {
+                            recordCallback = value;
+                        }
+                    }
+
+                    if (moduleMatch && callbackMatch) {
+                        break;
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                // Keep the direct fields read above. A partially readable
+                // record is still useful for diagnostics.
+            }
+        }
+
+        if (!moduleMatch || !callbackMatch) {
             continue;
         }
 
-        (void)frontierBase;
         record = candidate;
         scriptId = recordId;
         fiber = recordFiber;
@@ -531,6 +564,20 @@ void ScriptBridge::dispatchRegisteredScript(
 
     // UINT32_MAX is the unassigned sentinel observed in ScriptHookRDR 1.5.2.
     constexpr uint32_t kUnassignedScriptId = UINT32_MAX;
+
+    static std::atomic<bool> pendingStateLogged{false};
+    if (!pendingStateLogged.exchange(
+            true, std::memory_order_acq_rel)) {
+        std::cout
+            << "[ScriptBridge] Registro Frontier encontrado: record=0x"
+            << std::hex << record
+            << " ScriptId=0x" << scriptId
+            << " fiber=0x" << fiber
+            << " callback=0x" << callbackObject
+            << std::dec
+            << "."
+            << std::endl;
+    }
 
     // At this point the record exists, but ScriptHook may not have completed
     // its manager preparation yet. The original ScriptHook Run path normally
