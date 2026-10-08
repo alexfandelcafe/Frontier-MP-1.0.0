@@ -211,6 +211,7 @@ void NetworkManager::update(uint32_t timeoutMs) {
 
                 processPacket(
                     senderId,
+                    reinterpret_cast<void*>(event.peer),
                     channel,
                     event.packet->data,
                     event.packet->dataLength);
@@ -318,6 +319,7 @@ void NetworkManager::broadcast(
 
 void NetworkManager::processPacket(
     PlayerId senderId,
+    void* peer,
     Protocol::Channel channel,
     const uint8_t* data,
     size_t size)
@@ -344,37 +346,10 @@ void NetworkManager::processPacket(
                 const ModelHash model =
                     bs.read<ModelHash>();
 
-                // Find the ENet peer from the first packet by scanning the
-                // active peer states is unnecessary: the event path knows the
-                // peer, so senderId gets assigned there for future packets.
-                // For the first packet, processPacket is called with INVALID;
-                // recover the sole unassigned peer by looking for it in ENet.
                 if (senderId == INVALID_PLAYER_ID) {
-                    ENetHost* host =
-                        reinterpret_cast<ENetHost*>(m_enetHost);
-
-                    for (size_t i = 0; i < host->peerCount; ++i) {
-                        ENetPeer* peer = &host->peers[i];
-
-                        if (peer->state != ENET_PEER_STATE_CONNECTED) {
-                            continue;
-                        }
-
-                        if (m_server.getPlayerManager()
-                                  .getPlayerByPeer(peer)) {
-                            continue;
-                        }
-
-                        const PlayerId id =
-                            ensurePlayerForPeer(
-                                peer,
-                                playerName);
-
-                        if (id != INVALID_PLAYER_ID) {
-                            senderId = id;
-                            break;
-                        }
-                    }
+                    senderId = ensurePlayerForPeer(
+                        peer,
+                        playerName);
                 }
 
                 if (senderId == INVALID_PLAYER_ID) {
