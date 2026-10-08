@@ -112,19 +112,18 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     std::cout << "[FrontierClient] Player: " << cfg.playerName << std::endl;
     std::cout << "[FrontierClient] Target Server: " << cfg.serverIp << ":" << cfg.serverPort << std::endl;
 
-    // 2. Inicializar MinHook, DirectX/WndProc y el resto de interceptores.
-    // ScriptBridge instala después su interceptor sobre el detour real de
-    // rage::scrThread::Run de ScriptHookRDR, reutilizando la misma instancia
-    // de MinHook.
+    // 2. Registrar Frontier en ScriptHookRDR lo antes posible.
+    // ScriptHookRDR implementa su propio scheduler/fibers; Frontier no debe
+    // interceptar su Run ni manipular su ScriptManager interno.
+    Frontier::Core::ScriptBridge::initialize(hModule);
+
+    // 3. Inicializar MinHook, DirectX/WndProc y los interceptores gráficos.
     std::cout << "[FrontierClient] Installing DirectX 12 / DirectX 11 overlay hooks and script interceptor..." << std::endl;
     const bool engineHooksReady = Frontier::Core::EngineHooks::initialize();
     appendBootLog(modDir, engineHooksReady
         ? "[EngineHooks] initialize returned TRUE."
         : "[EngineHooks] initialize returned FALSE.");
 
-    // ScriptHookRDR se inicializa asincrónicamente. El bridge espera a que su
-    // propio Run hook exista, instala nuestro interceptor y registra Frontier.
-    Frontier::Core::ScriptBridge::initialize(hModule);
 
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout
@@ -133,11 +132,11 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
             << std::endl;
     }
 
-    // 3. Inicializar subsistemas del cliente
+    // 4. Inicializar subsistemas del cliente
     std::cout << "[FrontierClient] Initializing PlayerFactory and Native Invoker..." << std::endl;
     Frontier::Core::PlayerFactory::initialize();
 
-    // 4. Inicializar interfaz gráfica (FiveM Menu & CEF)
+    // 5. Inicializar interfaz gráfica (FiveM Menu & CEF)
     std::cout << "[FrontierClient] Activating FrontierMP In-Game GUI Overlay (D3D11 / CEF)..." << std::endl;
     Frontier::UI::D3D11Renderer::get().setMainMenuVisible(true);
 
@@ -145,13 +144,13 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
         std::cout << "[FrontierClient] Ready. Press Enter in menu or click 'Conectar' to join server." << std::endl;
     }
 
-    // 5. Bucle de actualización del cliente
+    // 6. Bucle de actualización del cliente
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // The bridge owns registration plus the ScriptHookRDR 1.5.2 scheduler
-        // fallback. It is serviced every client tick so the fallback can
-        // enter/yield the registered script fiber at roughly frame cadence.
+        // Cheap retry path for ScriptHook registration if the module was not available during worker startup.
+
+
         Frontier::Core::ScriptBridge::update(hModule);
 
         Frontier::UI::CefManager::get().update();
