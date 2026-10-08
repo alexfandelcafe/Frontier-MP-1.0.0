@@ -8,6 +8,10 @@ namespace Frontier::Net {
 
 class ResourceClient {
 public:
+    static bool httpGetStatus(
+        const std::string& host,
+        uint16_t httpPort);
+
     static bool downloadAll(
         const std::string& host,
         uint16_t httpPort,
