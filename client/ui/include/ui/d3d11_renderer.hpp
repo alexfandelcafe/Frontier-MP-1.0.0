@@ -7,6 +7,7 @@
 #include <dxgi1_4.h>
 #include <string>
 #include <vector>
+#include <mutex>
 
 namespace Frontier::UI {
 
@@ -41,6 +42,10 @@ public:
 
     void addChatMessage(const std::string& msg);
     void triggerConnect();
+
+    // Visual equivalent of RDRMP's CEF "set_loading_screen" message.
+    void setLoadingScreenVisible(bool visible, const std::string& message);
+    bool isLoadingScreenVisible() const;
 
 private:
     D3D11Renderer() = default;
@@ -111,6 +116,10 @@ private:
     uint32_t m_caretTimer{0};
 
     std::vector<ChatEntry> m_chatMessages;
+
+    mutable std::mutex m_loadingMutex;
+    bool m_loadingScreenVisible{false};
+    std::string m_loadingMessage;
 };
 
 } // namespace Frontier::UI
