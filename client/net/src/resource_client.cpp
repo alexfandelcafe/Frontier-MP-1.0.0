@@ -273,6 +273,18 @@ bool ResourceClient::httpDownloadFile(
     return ok;
 }
 
+bool ResourceClient::httpGetStatus(
+    const std::string& host,
+    uint16_t port)
+{
+    std::string body;
+    return httpGet(
+        host,
+        port,
+        "/status",
+        body);
+}
+
 bool ResourceClient::downloadAll(
     const std::string& host,
     uint16_t httpPort,
