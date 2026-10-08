@@ -70,6 +70,14 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
+    // The launcher intentionally keeps RDR's main thread suspended while both
+    // DLLs are injected. Registering against ScriptHook before the game has
+    // entered its render/script lifecycle is too early. FrontierMainThread
+    // calls this only after EngineHooks reports a live RDR swap chain.
+    if (!EngineHooks::isGameRenderReady()) {
+        return;
+    }
+
     resolveRuntimeApi();
 
     if (!s_scriptRegister || !s_scriptWait) {
