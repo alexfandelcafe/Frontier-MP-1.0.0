@@ -164,9 +164,11 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
-        // Script registration is performed from FrontierMainThread after
-        // the loader lock has been released.
+        // ScriptHook expects scriptRegister to be called from DLL attach.
+        // We only resolve/call the exported registration function here; all
+        // heavier initialization remains on FrontierMainThread.
         DisableThreadLibraryCalls(hModule);
+        Frontier::Core::ScriptBridge::registerScriptAtAttach(hModule);
         HANDLE hThread = CreateThread(nullptr, 0,
             (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
