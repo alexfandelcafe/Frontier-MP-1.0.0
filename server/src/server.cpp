@@ -142,6 +142,13 @@ bool Server::loadConfig(const std::string& path) {
             if (line.find(']') != std::string::npos) currentArray.clear();
         }
     }
+    // The original RDRMP client opens HTTP using the same numeric port as
+    // the ENet connection. TCP and UDP can bind the same port independently.
+    m_config.httpPort = m_config.port;
+    std::cout
+        << "[Server] Unified transport port: ENet UDP + HTTP TCP = "
+        << m_config.port
+        << std::endl;
     return true;
 }
 
@@ -203,7 +210,8 @@ void Server::handlePlayerHandshake(
     serverData.write<PlayerId>(id);
     serverData.writeString(m_config.serverName);
     serverData.writeString("Alpha vpre-0.0.5");
-    serverData.write<uint16_t>(m_config.httpPort);
+    // HTTPClient::Connect in the original client reuses ENetClient's host/port;
+    // no separate HTTP port is serialized in ServerData.
     serverData.write<ModelHash>(model);
     serverData.writeVector3(player->position);
     serverData.write<float>(player->heading);
