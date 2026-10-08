@@ -168,11 +168,52 @@ void PlayerFactory::destroyActor(uintptr_t actorPtr) {
 }
 
 uintptr_t PlayerFactory::getLocalPlayerActor() {
-    return s_localActor.load(std::memory_order_acquire);
+    if (NativeInvoker::isReady()) {
+        const int localSlot =
+            NativeInvoker::invoke<int>(Natives::GET_LOCAL_SLOT);
+        if (localSlot >= 0) {
+            const uintptr_t actor =
+                NativeInvoker::invoke<uintptr_t>(
+                    Natives::GET_PLAYER_ACTOR,
+                    localSlot);
+            if (actor) {
+                s_localActor.store(
+                    actor,
+                    std::memory_order_release);
+            }
+        }
+    }
+
+    return s_localActor.load(
+        std::memory_order_acquire);
 }
 
 bool PlayerFactory::isLocalPlayerReady() {
-    return s_localActor.load(std::memory_order_acquire) != 0;
+    if (!NativeInvoker::isReady()) {
+        return false;
+    }
+
+    const int localSlot =
+        NativeInvoker::invoke<int>(Natives::GET_LOCAL_SLOT);
+
+    if (localSlot < 0) {
+        return false;
+    }
+
+    const uintptr_t actor =
+        NativeInvoker::invoke<uintptr_t>(
+            Natives::GET_PLAYER_ACTOR,
+            localSlot);
+
+    if (!actor) {
+        return false;
+    }
+
+    s_localActor.store(
+        actor,
+        std::memory_order_release);
+
+    return true;
 }
 
 void PlayerFactory::enablePlayerControl(bool enable) {
