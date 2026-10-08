@@ -11,6 +11,7 @@
 #include <atomic>
 #include <filesystem>
 #include <chrono>
+#include <mutex>
 
 struct _ENetHost;
 struct _ENetPeer;
@@ -60,8 +61,17 @@ private:
     void processPacket(Protocol::Channel channel, const uint8_t* data, size_t size);
     void beginServerDataLoading();
     void finishWorldLoadIfReady();
+    void startPendingConnection();
 
-    bool m_connected{false};
+    std::atomic<bool> m_connected{false};
+    std::atomic<bool> m_connecting{false};
+    std::atomic<bool> m_connectRequested{false};
+
+    mutable std::mutex m_connectionRequestMutex;
+    std::string m_requestedHost;
+    std::string m_requestedPlayerName;
+    uint16_t m_requestedPort{0};
+
     PlayerId m_localPlayerId{INVALID_PLAYER_ID};
     std::string m_playerName;
     std::string m_serverHost;
@@ -84,6 +94,7 @@ private:
     std::thread m_resourceThread;
     std::filesystem::path m_cacheRoot;
     std::chrono::steady_clock::time_point m_clientWelcomeDeadline{};
+    std::chrono::steady_clock::time_point m_connectDeadline{};
 
     Vector3 m_spawnPosition{-180.0f, 60.0f, 1950.0f};
     float m_spawnHeading{0.0f};
