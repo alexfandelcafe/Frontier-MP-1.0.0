@@ -833,6 +833,10 @@ void D3D11Renderer::drawChat() {
 void D3D11Renderer::render(IDXGISwapChain* pSwapChain) {
     if (!m_initialized) return;
 
+    // Pump ENet every rendered frame so ServerData(0x04), disconnects and
+    // subsequent packets are consumed after connect() returns.
+    Net::ClientNetwork::get().update();
+
     UINT backBufferIdx = 0;
     if (m_isD3D12) {
         IDXGISwapChain3* pSwapChain3 = nullptr;
@@ -946,8 +950,17 @@ void D3D11Renderer::triggerConnect() {
     // ENet -> ServerData(packet 4) -> HTTP resources -> LoadOnline/InitSpawn.
     m_showChat = true;
 
+    auto& network = Net::ClientNetwork::get();
+    if (network.isConnected()) {
+        std::cout
+            << "[D3D11Renderer] Ya existe una conexión ENet activa; "
+               "se ignora el segundo intento."
+            << std::endl;
+        return;
+    }
+
     const bool connected =
-        Net::ClientNetwork::get().connect(m_serverIp, port, m_playerName);
+        network.connect(m_serverIp, port, m_playerName);
 
     if (!connected) {
         std::cerr << "[D3D11Renderer] No se pudo iniciar la conexión al servidor." << std::endl;
