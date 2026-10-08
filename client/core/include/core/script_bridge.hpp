@@ -23,12 +23,20 @@ private:
     static void __cdecl scriptMain();
     static void runFrame();
 
+    // ScriptHookRDR 1.5.2 keeps script registration public but starts the
+    // registered fiber from its internal Script ID dispatcher. We hook only
+    // the ScriptHook detour entry so we can invoke that existing dispatcher
+    // on the real RAGE script thread after ScriptHook has assigned an ID.
     static bool installRunDispatchHook(HMODULE hookModule);
+    static std::uint64_t __cdecl hookedScriptHookRun(
+        uintptr_t scriptThread,
+        uintptr_t param2);
     static void dispatchRegisteredScript(uintptr_t hookModuleBase);
 
     static inline std::atomic<bool> s_registered{false};
     static inline std::atomic<bool> s_warnedUnavailable{false};
     static inline std::atomic<bool> s_registrationRequested{false};
+
     static inline std::atomic<bool> s_runDispatchHookInstalled{false};
     static inline std::atomic<bool> s_runDispatchFailureLogged{false};
     static inline std::atomic<bool> s_scriptDispatchLogged{false};
