@@ -3,6 +3,7 @@
 #include "core/native_invoker.hpp"
 
 #include <windows.h>
+
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -21,53 +22,89 @@ ScriptRegisterFn s_scriptRegisterFallback = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 ScriptUnregisterFn s_scriptUnregister = nullptr;
 
-// 0 = todavía no registrado, 1 = probando scriptRegister, 2 = probando
-// scriptRegisterAdditionalThread. Cambiamos de ruta solo después de que la
-// anterior haya tenido tiempo de ser consumida por el scheduler de ScriptHook.
-static std::atomic<uint32_t> s_registrationMode{0};
+std::atomic<uint32_t> s_registrationMode{0};
+// 0 = sin intento, 1 = scriptRegister, 2 = scriptRegisterAdditionalThread.
+std::atomic<uint32_t> s_attachRegistrationMode{0};
 
 template <typename T>
 T resolveExport(HMODULE module, const char* name) {
     if (!module || !name) return nullptr;
-    const FARPROC proc = GetProcAddress(module, name);
-    return proc ? reinterpret_cast<T>(proc) : nullptr;
+
+    const FARPROC proc =
+        GetProcAddress(module, name);
+
+    return proc
+        ? reinterpret_cast<T>(proc)
+        : nullptr;
 }
 
 template <typename T>
-T resolveMangledExport(HMODULE module, const char* token) {
-    if (!module || !token || !*token) return nullptr;
+T resolveMangledExport(
+    HMODULE module,
+    const char* token)
+{
+    if (!module || !token || !*token) {
+        return nullptr;
+    }
 
     const auto* dos =
         reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return nullptr;
+    }
 
     const auto* nt =
         reinterpret_cast<const IMAGE_NT_HEADERS64*>(
-            reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+            reinterpret_cast<const uint8_t*>(module) +
+            dos->e_lfanew);
+
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        return nullptr;
+    }
 
     const auto& directory =
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (!directory.VirtualAddress || !directory.Size) return nullptr;
+        nt->OptionalHeader.DataDirectory[
+            IMAGE_DIRECTORY_ENTRY_EXPORT];
+
+    if (!directory.VirtualAddress ||
+        !directory.Size) {
+        return nullptr;
+    }
 
     const auto* exports =
         reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
             reinterpret_cast<const uint8_t*>(module) +
             directory.VirtualAddress);
+
     const auto* names =
         reinterpret_cast<const DWORD*>(
             reinterpret_cast<const uint8_t*>(module) +
             exports->AddressOfNames);
 
-    for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
+    for (DWORD i = 0;
+         i < exports->NumberOfNames;
+         ++i) {
+
         const char* exportedName =
             reinterpret_cast<const char*>(
-                reinterpret_cast<const uint8_t*>(module) + names[i]);
+                reinterpret_cast<const uint8_t*>(module) +
+                names[i]);
 
-        if (!std::strstr(exportedName, token)) continue;
+        if (!std::strstr(
+                exportedName,
+                token)) {
+            continue;
+        }
 
-        const FARPROC proc = GetProcAddress(module, exportedName);
-        if (proc) return reinterpret_cast<T>(proc);
+        const FARPROC proc =
+            GetProcAddress(
+                module,
+                exportedName);
+
+        if (proc) {
+            return reinterpret_cast<T>(proc);
+        }
     }
 
     return nullptr;
@@ -75,18 +112,11 @@ T resolveMangledExport(HMODULE module, const char* token) {
 
 void resolveScriptHook() {
     HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) return;
+        GetModuleHandleA(
+            "ScriptHookRDR.dll");
 
-    s_scriptRegisterAdditionalThread =
-        resolveExport<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!s_scriptRegisterAdditionalThread) {
-        s_scriptRegisterAdditionalThread =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule, "scriptRegisterAdditionalThread");
+    if (!hookModule) {
+        return;
     }
 
     s_scriptRegisterFallback =
@@ -97,17 +127,32 @@ void resolveScriptHook() {
     if (!s_scriptRegisterFallback) {
         s_scriptRegisterFallback =
             resolveMangledExport<ScriptRegisterFn>(
-                hookModule, "scriptRegister");
+                hookModule,
+                "scriptRegister");
+    }
+
+    s_scriptRegisterAdditionalThread =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!s_scriptRegisterAdditionalThread) {
+        s_scriptRegisterAdditionalThread =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule,
+                "scriptRegisterAdditionalThread");
     }
 
     s_scriptWait =
         resolveExport<ScriptWaitFn>(
-            hookModule, "?scriptWait@@YAXK@Z");
+            hookModule,
+            "?scriptWait@@YAXK@Z");
 
     if (!s_scriptWait) {
         s_scriptWait =
             resolveMangledExport<ScriptWaitFn>(
-                hookModule, "scriptWait");
+                hookModule,
+                "scriptWait");
     }
 
     s_scriptUnregister =
@@ -118,31 +163,41 @@ void resolveScriptHook() {
     if (!s_scriptUnregister) {
         s_scriptUnregister =
             resolveMangledExport<ScriptUnregisterFn>(
-                hookModule, "scriptUnregister");
+                hookModule,
+                "scriptUnregister");
     }
 
     NativeInvoker::initialize();
 
-    std::cout << "[ScriptBridge] APIs de registro: scriptRegister="
-              << reinterpret_cast<void*>(s_scriptRegisterFallback)
-              << " scriptRegisterAdditionalThread="
-              << reinterpret_cast<void*>(s_scriptRegisterAdditionalThread)
-              << " scriptWait="
-              << reinterpret_cast<void*>(s_scriptWait)
-              << std::endl;
+    std::cout
+        << "[ScriptBridge] APIs de registro: scriptRegister="
+        << reinterpret_cast<void*>(
+               s_scriptRegisterFallback)
+        << " scriptRegisterAdditionalThread="
+        << reinterpret_cast<void*>(
+               s_scriptRegisterAdditionalThread)
+        << " scriptWait="
+        << reinterpret_cast<void*>(
+               s_scriptWait)
+        << std::endl;
 }
 
 } // namespace
 
-void ScriptBridge::registerScriptAtAttach(HMODULE module) {
+void ScriptBridge::registerScriptAtAttach(
+    HMODULE module)
+{
     if (!module ||
         s_registered.load(std::memory_order_acquire) ||
-        s_registrationInFlight.load(std::memory_order_acquire)) {
+        s_registrationInFlight.load(
+            std::memory_order_acquire)) {
         return;
     }
 
     HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
+        GetModuleHandleA(
+            "ScriptHookRDR.dll");
+
     if (!hookModule) {
         OutputDebugStringA(
             "[FrontierClient] ScriptHookRDR no estaba cargado durante DLL attach.\n");
@@ -173,23 +228,38 @@ void ScriptBridge::registerScriptAtAttach(HMODULE module) {
                 "scriptRegisterAdditionalThread");
     }
 
+    // Prefer the normal SDK route. ScriptHook documentation expects
+    // scriptRegister to be used from DLL attach.
     ScriptRegisterFn selected =
-        registerNormal ? registerNormal : registerAdditional;
+        registerNormal
+            ? registerNormal
+            : registerAdditional;
 
     if (!selected) {
         OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no expone ninguna API de registro.\n");
+            "[FrontierClient] ScriptHookRDR no expone una API de registro de scripts.\n");
         return;
     }
 
-    selected(module, &ScriptBridge::scriptMain);
+    selected(
+        module,
+        &ScriptBridge::scriptMain);
+
+    const uint32_t mode =
+        registerNormal ? 1u : 2u;
+
+    s_attachRegistrationMode.store(
+        mode,
+        std::memory_order_release);
 
     s_registrationMode.store(
-        registerNormal ? 1u : 2u,
+        mode,
         std::memory_order_release);
+
     s_registrationInFlight.store(
         true,
         std::memory_order_release);
+
     s_lastRegistrationTick.store(
         GetTickCount64(),
         std::memory_order_release);
@@ -202,18 +272,21 @@ void ScriptBridge::registerScriptAtAttach(HMODULE module) {
 
 void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
-        s_registered.load(std::memory_order_acquire)) {
+        s_registered.load(
+            std::memory_order_acquire)) {
         return;
     }
 
     resolveScriptHook();
 
     if (!s_scriptWait ||
-        (!s_scriptRegisterAdditionalThread &&
-         !s_scriptRegisterFallback)) {
+        (!s_scriptRegisterFallback &&
+         !s_scriptRegisterAdditionalThread)) {
 
         if (!s_warnedUnavailable.exchange(
-                true, std::memory_order_acq_rel)) {
+                true,
+                std::memory_order_acq_rel)) {
+
             std::cerr
                 << "[ScriptBridge] ScriptHookRDR no expone la API "
                    "necesaria para crear el script Frontier."
@@ -223,112 +296,132 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    // ScriptHook puede tardar en iniciar su scheduler. Reintentar una solicitud
-    // que no comenzó es seguro y evita el bloqueo que vimos con scriptRegister.
-    const uint64_t now = GetTickCount64();
+    const uint64_t now =
+        GetTickCount64();
+
     const uint64_t last =
-        s_lastRegistrationTick.load(std::memory_order_acquire);
+        s_lastRegistrationTick.load(
+            std::memory_order_acquire);
 
-    if (s_registrationInFlight.load(std::memory_order_acquire)) {
-        if (now - last < 3000) return;
+    if (s_registrationInFlight.load(
+            std::memory_order_acquire)) {
 
-        const uint32_t previousMode =
-            s_registrationMode.load(std::memory_order_acquire);
+        if (now - last < 3000) {
+            return;
+        }
 
         if (s_scriptUnregister) {
             s_scriptUnregister(module);
             std::cout
-                << "[ScriptBridge] Registro anterior retirado antes de "
-                   "cambiar de ruta."
+                << "[ScriptBridge] Registro anterior retirado "
+                   "para reintentar."
                 << std::endl;
         }
 
-        // La ruta normal es la API soportada por las versiones modernas de
-        // ScriptHook. Solo usamos la API adicional como fallback real si el
-        // callback registrado por scriptRegister no arrancó.
-        if (previousMode == 1 && s_scriptRegisterAdditionalThread) {
-            s_registrationMode.store(2, std::memory_order_release);
+        const uint32_t previousMode =
+            s_registrationMode.load(
+                std::memory_order_acquire);
+
+        if (previousMode == 1 &&
+            s_scriptRegisterAdditionalThread) {
+
+            s_registrationMode.store(
+                2,
+                std::memory_order_release);
+
         } else if (s_scriptRegisterFallback) {
-            s_registrationMode.store(1, std::memory_order_release);
-        } else {
-            s_registrationMode.store(2, std::memory_order_release);
+
+            s_registrationMode.store(
+                1,
+                std::memory_order_release);
+
+        } else if (s_scriptRegisterAdditionalThread) {
+
+            s_registrationMode.store(
+                2,
+                std::memory_order_release);
         }
 
-        s_void ScriptBridge::registerScriptAtAttach(HMODULE module) {
-    if (!module ||
-        s_registered.load(std::memory_order_acquire) ||
-        s_registrationInFlight.load(std::memory_order_acquire)) {
-        return;
+        s_registrationInFlight.store(
+            false,
+            std::memory_order_release);
     }
 
-    HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
-        OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no estaba cargado durante DLL attach.\n");
-        return;
+    uint32_t mode =
+        s_registrationMode.load(
+            std::memory_order_acquire);
+
+    if (mode == 0) {
+        mode =
+            s_scriptRegisterFallback
+                ? 1u
+                : 2u;
+
+        s_registrationMode.store(
+            mode,
+            std::memory_order_release);
     }
 
-    auto registerNormal =
-        resolveExport<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+    ScriptRegisterFn selected = nullptr;
 
-    if (!registerNormal) {
-        registerNormal =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule,
-                "scriptRegister");
+    if (mode == 1 &&
+        s_scriptRegisterFallback) {
+
+        selected =
+            s_scriptRegisterFallback;
+
+    } else if (
+        mode == 2 &&
+        s_scriptRegisterAdditionalThread) {
+
+        selected =
+            s_scriptRegisterAdditionalThread;
     }
-
-    auto registerAdditional =
-        resolveExport<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!registerAdditional) {
-        registerAdditional =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule,
-                "scriptRegisterAdditionalThread");
-    }
-
-    ScriptRegisterFn selected =
-        registerNormal ? registerNormal : registerAdditional;
 
     if (!selected) {
-        OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no expone ninguna API de registro.\n");
+        s_registrationInFlight.store(
+            false,
+            std::memory_order_release);
         return;
     }
 
-    selected(module, &ScriptBridge::scriptMain);
+    selected(
+        module,
+        &ScriptBridge::scriptMain);
 
-    s_registrationMode.store(
-        registerNormal ? 1u : 2u,
+    s_lastRegistrationTick.store(
+        now,
         std::memory_order_release);
+
     s_registrationInFlight.store(
         true,
         std::memory_order_release);
-    s_lastRegistrationTick.store(
-        GetTickCount64(),
-        std::memory_order_release);
 
-    OutputDebugStringA(
-        registerNormal
-            ? "[FrontierClient] Frontier registrado mediante scriptRegister en DLL attach.\n"
-            : "[FrontierClient] Frontier registrado mediante scriptRegisterAdditionalThread en DLL attach.\n");
+    if (mode == 1) {
+        std::cout
+            << "[ScriptBridge] Registro solicitado mediante scriptRegister."
+            << std::endl;
+    } else {
+        std::cout
+            << "[ScriptBridge] Registro solicitado mediante "
+               "scriptRegisterAdditionalThread."
+            << std::endl;
+    }
 }
 
-
-
 bool ScriptBridge::isRegistered() {
-    return s_registered.load(std::memory_order_acquire);
+    return s_registered.load(
+        std::memory_order_acquire);
 }
 
 void __cdecl ScriptBridge::scriptMain() {
-    s_registered.store(true, std::memory_order_release);
-    s_registrationInFlight.store(false, std::memory_order_release);
+    s_registered.store(
+        true,
+        std::memory_order_release);
+
+    s_registrationInFlight.store(
+        false,
+        std::memory_order_release);
 
     std::cout
         << "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE."
@@ -337,7 +430,10 @@ void __cdecl ScriptBridge::scriptMain() {
     for (;;) {
         runFrame();
 
-        if (!s_scriptWait) return;
+        if (!s_scriptWait) {
+            return;
+        }
+
         s_scriptWait(0);
     }
 }
@@ -347,7 +443,9 @@ void ScriptBridge::runFrame() {
         NativeInvoker::initialize();
     }
 
-    if (!NativeInvoker::isReady()) return;
+    if (!NativeInvoker::isReady()) {
+        return;
+    }
 
     EngineHooks::processMultiplayerWorldLoad();
 }
