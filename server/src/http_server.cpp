@@ -178,20 +178,36 @@ bool HttpServer::start(
     m_host = host;
     m_port = port;
     m_rootDir = rootDirectory;
-    m_running = true;
+    m_ready.store(false, std::memory_order_release);
+    m_failed.store(false, std::memory_order_release);
+    m_running.store(true, std::memory_order_release);
 
     m_thread =
         std::thread(
             &HttpServer::listenLoop,
             this);
 
-    std::cout
-        << "[HttpServer] Asset streaming server listening on http://"
-        << host << ":" << port
-        << " root=" << m_rootDir.string()
-        << std::endl;
+    for (int i = 0;
+         i < 40 &&
+         !m_ready.load(std::memory_order_acquire) &&
+         !m_failed.load(std::memory_order_acquire);
+         ++i) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(25));
+    }
 
-    return true;
+    const bool ready =
+        m_ready.load(std::memory_order_acquire);
+
+    if (ready) {
+        std::cout
+            << "[HttpServer] READY http://"
+            << host << ":" << port
+            << " root=" << m_rootDir.string()
+            << std::endl;
+    }
+
+    return ready;
 }
 
 void HttpServer::stop() {
@@ -228,6 +244,8 @@ void HttpServer::listenLoop() {
             IPPROTO_TCP);
 
     if (serverSock == INVALID_SOCKET) {
+        m_failed.store(true, std::memory_order_release);
+        m_running.store(false, std::memory_order_release);
         std::cerr
             << "[HttpServer] Failed to create socket."
             << std::endl;
@@ -255,11 +273,14 @@ void HttpServer::listenLoop() {
             reinterpret_cast<sockaddr*>(&serverAddr),
             sizeof(serverAddr)) == SOCKET_ERROR) {
 
+        m_failed.store(true, std::memory_order_release);
+        m_running.store(false, std::memory_order_release);
         std::cerr
             << "[HttpServer] Failed to bind port "
             << m_port
             << std::endl;
-        closesocket(serverSock);
+        m_ready.store(false, std::memory_order_release);
+    closesocket(serverSock);
 #ifdef _WIN32
         WSACleanup();
 #endif
@@ -267,6 +288,8 @@ void HttpServer::listenLoop() {
     }
 
     if (listen(serverSock, 16) == SOCKET_ERROR) {
+        m_failed.store(true, std::memory_order_release);
+        m_running.store(false, std::memory_order_release);
         std::cerr
             << "[HttpServer] listen() failed."
             << std::endl;
