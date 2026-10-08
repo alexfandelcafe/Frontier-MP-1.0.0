@@ -5,6 +5,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <cstring>
 #include "dependency_bootstrap.hpp"
 
 #ifdef _WIN32
@@ -15,8 +16,13 @@
 
 namespace fs = std::filesystem;
 #ifdef _WIN32
-static bool waitForRdrWindow(DWORD processId, DWORD timeoutMs) {
+static bool waitForRdrWindow(
+    HANDLE processHandle,
+    DWORD processId,
+    DWORD timeoutMs)
+{
     const DWORD start = GetTickCount();
+
     while (GetTickCount() - start < timeoutMs) {
         struct WindowSearch {
             DWORD pid;
@@ -28,17 +34,22 @@ static bool waitForRdrWindow(DWORD processId, DWORD timeoutMs) {
                 auto* s = reinterpret_cast<WindowSearch*>(lParam);
                 DWORD pid = 0;
                 GetWindowThreadProcessId(hwnd, &pid);
+
                 if (pid != s->pid || !IsWindowVisible(hwnd)) {
                     return TRUE;
                 }
 
                 char title[256] = {};
+                char className[256] = {};
                 GetWindowTextA(hwnd, title, sizeof(title));
+                GetClassNameA(hwnd, className, sizeof(className));
+
                 if (std::strlen(title) > 0 ||
-                    GetClassNameA(hwnd, title, sizeof(title))) {
+                    std::strlen(className) > 0) {
                     s->found = hwnd;
                     return FALSE;
                 }
+
                 return TRUE;
             },
             reinterpret_cast<LPARAM>(&search));
@@ -47,14 +58,13 @@ static bool waitForRdrWindow(DWORD processId, DWORD timeoutMs) {
             return true;
         }
 
-        if (WaitForSingleObject(
-                OpenProcess(SYNCHRONIZE, FALSE, processId),
-                0) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) {
             return false;
         }
 
         Sleep(100);
     }
+
     return false;
 }
 #endif
@@ -390,7 +400,7 @@ int main(int argc, char* argv[]) {
     // Wait for the real RDR window before injecting Frontier. This gives
     // ScriptHook its normal startup lifecycle while keeping both modules
     // outside the game installation.
-    if (!waitForRdrWindow(pi.dwProcessId, 15000)) {
+    if (!waitForRdrWindow(pi.hProcess, pi.dwProcessId, 15000)) {
         std::cerr
             << "[Launcher] [ERROR] RDR window did not become ready in time."
             << std::endl;
