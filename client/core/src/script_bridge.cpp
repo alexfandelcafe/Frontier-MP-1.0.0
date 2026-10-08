@@ -73,6 +73,32 @@ T resolveMangledExport(HMODULE module, const char* token) {
 
     return nullptr;
 }
+size_t readScriptHookVectorCount(HMODULE hookModule, uintptr_t rva) {
+    if (!hookModule) {
+        return 0;
+    }
+
+    uintptr_t begin = 0;
+    uintptr_t end = 0;
+
+    if (!readScriptHookValue(
+            hookModule, rva, begin) ||
+        !readScriptHookValue(
+            hookModule, rva + sizeof(uintptr_t), end) ||
+        !begin || !end || end < begin) {
+        return 0;
+    }
+
+    const uintptr_t bytes = end - begin;
+    if ((bytes % sizeof(uintptr_t)) != 0 ||
+        bytes > (sizeof(uintptr_t) * 1024)) {
+        return 0;
+    }
+
+    return static_cast<size_t>(
+        bytes / sizeof(uintptr_t));
+}
+
 
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
@@ -235,6 +261,31 @@ void ScriptBridge::initialize(HMODULE module) {
 void ScriptBridge::update(HMODULE module) {
     if (!module) {
         return;
+    }
+
+    static std::atomic<bool> registrationStateLogged{false};
+    if (s_registrationRequested.load(std::memory_order_acquire) &&
+        !s_registered.load(std::memory_order_acquire) &&
+        !registrationStateLogged.exchange(true, std::memory_order_acq_rel)) {
+
+        const HMODULE hookModule =
+            GetModuleHandleA("ScriptHookRDR.dll");
+
+        const size_t pendingRegistrations =
+            readScriptHookVectorCount(hookModule, 0x20e108);
+
+        const size_t scriptStacks =
+            readScriptHookVectorCount(hookModule, 0x20e0f0);
+
+        std::cout
+            << "[ScriptBridge] Diagnóstico post-scriptRegister: "
+               "registrationRequested=1, "
+               "pendingRegistrationEntries="
+            << pendingRegistrations
+            << ", scriptStackEntries="
+            << scriptStacks
+            << ", scriptMainStarted=0."
+            << std::endl;
     }
 
     // Normally registration succeeds during initialize(). This remains a
