@@ -74,6 +74,7 @@ private:
     std::atomic<bool> m_resourcesReady{false};
     std::atomic<bool> m_resourceFailed{false};
     std::atomic<bool> m_clientWelcomeSent{false};
+    std::atomic<bool> m_worldTransitionRequested{false};
 
     std::thread m_resourceThread;
     std::filesystem::path m_cacheRoot;
