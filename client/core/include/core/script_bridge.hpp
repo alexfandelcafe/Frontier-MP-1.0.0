@@ -19,10 +19,6 @@ private:
     static inline std::atomic<bool> s_registered{false};
     static inline std::atomic<bool> s_warnedUnavailable{false};
     static inline std::atomic<bool> s_registrationRequested{false};
-    static inline std::atomic<bool> s_runDispatchHookInstalled{false};
-    static inline std::atomic<bool> s_runDispatchFailureLogged{false};
-    static inline std::atomic<bool> s_scriptDispatchLogged{false};
-    static inline std::atomic<bool> s_schedulerReadyLogged{false};
 };
 
 } // namespace Frontier::Core
