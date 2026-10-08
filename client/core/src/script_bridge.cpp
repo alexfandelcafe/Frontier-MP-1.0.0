@@ -18,8 +18,6 @@ using ScriptWaitFn = void (*)(DWORD);
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 
-// ScriptHookRDR 1.5.2 internal maintenance entry point.
-// FUN_180031970 prepares/starts a registered script fiber before dispatch.
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -244,21 +242,13 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
-    bool expected = false;
-    if (!s_registered.compare_exchange_strong(
-            expected, true,
-            std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
-        return;
-    }
+    // ScriptHookRDR invokes this callback as the fiber entrypoint. Do not
+    // suppress subsequent invocations: Reset/load may recreate the script
+    // fiber and invoke the registered callback again.
+    s_registered.store(true, std::memory_order_release);
 
     std::cout
-        << "[ScriptBridge] ScriptMain iniciado dentro del scheduler normal "
-           "de ScriptHookRDR."
-        << std::endl;
-
-    std::cout
-        << "[ScriptBridge] ScriptMain ejecutándose en el fiber gestionado por "
+        << "[ScriptBridge] ScriptMain invocado por el scheduler normal de "
            "ScriptHookRDR."
         << std::endl;
 
