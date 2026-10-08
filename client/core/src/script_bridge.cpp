@@ -185,7 +185,7 @@ void ScriptBridge::tryRegister(HMODULE module) {
         return;
     }
 
-    resolveScriptHook(module);
+    resolveScriptHook();
     if (!s_scriptRegister) {
         return;
     }
