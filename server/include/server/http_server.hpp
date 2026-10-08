@@ -26,6 +26,8 @@ private:
     uint16_t m_port{4675};
     std::filesystem::path m_rootDir;
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_ready{false};
+    std::atomic<bool> m_failed{false};
     std::thread m_thread;
 };
 
