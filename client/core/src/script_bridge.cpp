@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cstdint>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 
 namespace Frontier::Core {
 
@@ -33,6 +35,28 @@ ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     return proc
         ? reinterpret_cast<ScriptRegisterFn>(proc)
         : nullptr;
+}
+
+void appendScriptBootLog(const char* message) {
+    char modulePath[MAX_PATH] = {};
+    HMODULE module = GetModuleHandleA("frontier_core.dll");
+    if (!module ||
+        !GetModuleFileNameA(module, modulePath, MAX_PATH)) {
+        return;
+    }
+
+    try {
+        const std::filesystem::path logPath =
+            std::filesystem::path(modulePath).parent_path() /
+            "frontier_script_boot.log";
+
+        std::ofstream log(logPath, std::ios::app);
+        if (log.is_open()) {
+            log << message << std::endl;
+        }
+    } catch (...) {
+        // Boot logging must never interfere with ScriptHook execution.
+    }
 }
 
 ScriptWaitFn resolveScriptWait(HMODULE hookModule) {
@@ -99,6 +123,8 @@ void ScriptBridge::registerScript(HMODULE module) {
         module,
         &ScriptBridge::scriptMain);
 
+    appendScriptBootLog(
+        "scriptRegister registrado. Esperando ejecución de ScriptMain.");
     OutputDebugStringA(
         "[ScriptBridge] scriptRegister registrado; ScriptMain queda en manos del scheduler de ScriptHookRDR.\n");
 }
@@ -109,6 +135,7 @@ bool ScriptBridge::isRegistered() {
 }
 
 void __cdecl ScriptBridge::scriptMain() {
+    appendScriptBootLog("ScriptMain ENTER.");
     OutputDebugStringA(
         "[ScriptBridge] ScriptMain ENTER.\n");
 
@@ -124,6 +151,10 @@ void __cdecl ScriptBridge::scriptMain() {
     // actual ScriptMain fiber. This keeps all native calls inside ScriptHook's
     // supported script context.
     NativeInvoker::initialize();
+    appendScriptBootLog(
+        NativeInvoker::isReady()
+            ? "NativeInvoker listo dentro de ScriptMain."
+            : "NativeInvoker NO listo dentro de ScriptMain.");
 
     OutputDebugStringA(
         "[ScriptBridge] ScriptMain iniciado dentro del scheduler de RAGE.\n");
