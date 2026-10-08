@@ -23,15 +23,16 @@ ScriptUnregisterFn s_scriptUnregister = nullptr;
 std::atomic<uint64_t> s_lastRetryTick{0};
 constexpr uint64_t kRegistrationRetryMs = 1500;
 
-ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
+ScriptRegisterFn resolveScriptRegisterAdditionalThread(HMODULE hookModule) {
     if (!hookModule) {
         return nullptr;
     }
 
-    // Exact export used by the public RDR1 ScriptHook SDK.
+    // Public RDR1 ScriptHook SDK entry point for an independently scheduled
+    // script thread. This avoids depending on the primary script queue.
     const FARPROC proc = GetProcAddress(
         hookModule,
-        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+        "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
 
     return proc
         ? reinterpret_cast<ScriptRegisterFn>(proc)
@@ -74,7 +75,7 @@ void resolveRuntimeApi() {
         return;
     }
 
-    s_scriptRegister = resolveScriptRegister(hookModule);
+    s_scriptRegister = resolveScriptRegisterAdditionalThread(hookModule);
     s_scriptWait = resolveScriptWait(hookModule);
     s_scriptUnregister = resolveScriptUnregister(hookModule);
 }
@@ -96,18 +97,21 @@ void ScriptBridge::registerScriptAtAttach(HMODULE module) {
         return;
     }
 
-    // Keep DLL_PROCESS_ATTACH deliberately minimal and match the public
-    // RDR1 example project's registration mechanism exactly.
-    const ScriptRegisterFn registerFn =
-        resolveScriptRegister(hookModule);
+    // Keep DLL_PROCESS_ATTACH deliberately minimal. Register Frontier on
+    // ScriptHook's public additional-script queue, which has its own
+    // scheduler and does not require private ScriptHook internals.
+    if (!s_scriptRegister) {
+        s_scriptRegister =
+            resolveScriptRegisterAdditionalThread(hookModule);
+    }
 
-    if (!registerFn) {
+    if (!s_scriptRegister) {
         OutputDebugStringA(
-            "[FrontierClient] scriptRegister no pudo resolverse durante DLL attach.\n");
+            "[FrontierClient] scriptRegisterAdditionalThread no pudo resolverse durante DLL attach.\n");
         return;
     }
 
-    registerFn(
+    s_scriptRegister(
         module,
         &ScriptBridge::scriptMain);
 
@@ -120,7 +124,7 @@ void ScriptBridge::registerScriptAtAttach(HMODULE module) {
         std::memory_order_release);
 
     OutputDebugStringA(
-        "[FrontierClient] scriptRegister llamado durante DLL_PROCESS_ATTACH.\n");
+        "[FrontierClient] scriptRegisterAdditionalThread llamado durante DLL_PROCESS_ATTACH.\n");
 }
 
 void ScriptBridge::registerScript(HMODULE module) {
@@ -137,7 +141,7 @@ void ScriptBridge::registerScript(HMODULE module) {
                 std::memory_order_acq_rel)) {
             std::cerr
                 << "[ScriptBridge] ScriptHookRDR todavía no expone "
-                   "scriptRegister/scriptWait."
+                   "scriptRegisterAdditionalThread/scriptWait."
                 << std::endl;
         }
         return;
@@ -152,7 +156,7 @@ void ScriptBridge::registerScript(HMODULE module) {
     }
 
     // If the attach-time attempt happened before ScriptHook's scheduler was
-    // ready, repeat the same public registration call. No private scheduler
+    // ready, repeat the same public additional-thread registration call. No private scheduler
     // internals are touched, and retries stop immediately once ScriptMain runs.
     s_scriptRegister(module, &ScriptBridge::scriptMain);
 
@@ -165,7 +169,7 @@ void ScriptBridge::registerScript(HMODULE module) {
         std::memory_order_release);
 
     std::cout
-        << "[ScriptBridge] scriptRegister enviado/reintentado desde el worker; "
+        << "[ScriptBridge] scriptRegisterAdditionalThread enviado/reintentado desde el worker; "
            "esperando ScriptMain."
         << std::endl;
 }
