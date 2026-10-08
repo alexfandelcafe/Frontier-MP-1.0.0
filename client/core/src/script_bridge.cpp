@@ -3,6 +3,7 @@
 #include "core/native_invoker.hpp"
 
 #include <windows.h>
+#include <MinHook.h>
 
 #include <atomic>
 #include <cstdint>
@@ -15,9 +16,18 @@ namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
+using ScriptStartByIdFn = void (*)(uint32_t);
+using ScriptHookRunDetourFn = uint64_t (*)(uintptr_t, uintptr_t);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
+ScriptStartByIdFn s_scriptStartById = nullptr;
+ScriptHookRunDetourFn s_originalScriptHookRunDetour = nullptr;
+
+constexpr uintptr_t kScriptHookRunDetourRva = 0x23540;
+constexpr uintptr_t kScriptManagerRecordsBeginRva = 0x20e0f0;
+constexpr uintptr_t kScriptManagerRecordsEndRva = 0x20e0f8;
+constexpr uintptr_t kScriptStartByIdRva = 0x31a20;
 
 template <typename T>
 T getExportByExactName(HMODULE module, const char* name) {
@@ -105,161 +115,102 @@ bool readScriptHookValue(HMODULE module, uintptr_t rva, T& value) {
     return true;
 }
 
-size_t readScriptHookVectorCount(HMODULE hookModule, uintptr_t rva) {
-    if (!hookModule) {
-        return 0;
+
+bool readFrontierScriptRecord(
+    HMODULE hookModule,
+    HMODULE frontierModule,
+    uintptr_t& record,
+    uint32_t& scriptId,
+    uintptr_t& fiber,
+    uintptr_t& callbackObject)
+{
+    record = 0;
+    scriptId = 0;
+    fiber = 0;
+    callbackObject = 0;
+
+    if (!hookModule || !frontierModule) {
+        return false;
     }
 
     uintptr_t begin = 0;
     uintptr_t end = 0;
 
     if (!readScriptHookValue(
-            hookModule, rva, begin) ||
+            hookModule, kScriptManagerRecordsBeginRva, begin) ||
         !readScriptHookValue(
-            hookModule, rva + sizeof(uintptr_t), end) ||
-        !begin || !end || end < begin) {
-        return 0;
+            hookModule, kScriptManagerRecordsEndRva, end) ||
+        !begin || !end || end <= begin) {
+        return false;
     }
 
     const uintptr_t bytes = end - begin;
     if ((bytes % sizeof(uintptr_t)) != 0 ||
-        bytes > (sizeof(uintptr_t) * 1024)) {
-        return 0;
-    }
-
-    return static_cast<size_t>(
-        bytes / sizeof(uintptr_t));
-}
-
-bool readScriptRecordPointer(
-    HMODULE hookModule,
-    uintptr_t vectorRva,
-    uintptr_t& record)
-{
-    record = 0;
-    if (!hookModule) {
+        bytes > sizeof(uintptr_t) * 64) {
         return false;
     }
 
-    uintptr_t begin = 0;
-    uintptr_t end = 0;
+    for (uintptr_t cursor = begin;
+         cursor < end;
+         cursor += sizeof(uintptr_t)) {
 
-    if (!readScriptHookValue(hookModule, vectorRva, begin) ||
-        !readScriptHookValue(
-            hookModule, vectorRva + sizeof(uintptr_t), end) ||
-        !begin || end <= begin ||
-        (end - begin) < sizeof(uintptr_t)) {
-        return false;
-    }
-
-    __try {
-        record = *reinterpret_cast<const uintptr_t*>(begin);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        record = 0;
-        return false;
-    }
-
-    return record != 0;
-}
-
-void logRegisteredScriptRecord(
-    HMODULE hookModule,
-    HMODULE frontierModule)
-{
-    uintptr_t record = 0;
-    if (!readScriptRecordPointer(
-            hookModule, 0x20e108, record)) {
-        std::cout
-            << "[ScriptBridge] No se pudo leer el primer registro de "
-               "ScriptHookRDR."
-            << std::endl;
-        return;
-    }
-
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(
-            reinterpret_cast<const void*>(record),
-            &mbi,
-            sizeof(mbi)) != sizeof(mbi) ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & PAGE_GUARD) ||
-        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
-        std::cout
-            << "[ScriptBridge] El primer registro de ScriptHookRDR no apunta "
-               "a memoria legible."
-            << std::endl;
-        return;
-    }
-
-    const uintptr_t frontierBase =
-        reinterpret_cast<uintptr_t>(frontierModule);
-    const uintptr_t scriptMain =
-        reinterpret_cast<uintptr_t>(&ScriptBridge::scriptMain);
-
-    uintptr_t moduleField = 0;
-    uintptr_t fiberField = 0;
-    uint32_t scriptId = 0;
-
-    __try {
-        // Known fields from the 1.5.2 record layout observed in the
-        // decompilation: +0x68 = fiber, +0x8c = ScriptId.
-        fiberField =
-            *reinterpret_cast<const uintptr_t*>(record + 0x68);
-        scriptId =
-            *reinterpret_cast<const uint32_t*>(record + 0x8c);
-
-        // Look for the Frontier module handle and exact ScriptMain pointer
-        // without assuming their field offsets.
-        for (uintptr_t off = 0;
-             off <= 0xB8;
-             off += sizeof(uintptr_t)) {
-            uintptr_t value =
-                *reinterpret_cast<const uintptr_t*>(record + off);
-
-            if (value == frontierBase) {
-                moduleField = off;
-            }
+        uintptr_t candidate = 0;
+        __try {
+            candidate =
+                *reinterpret_cast<const uintptr_t*>(cursor);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        std::cout
-            << "[ScriptBridge] Excepción leyendo el registro de "
-               "ScriptHookRDR; se omite el diagnóstico."
-            << std::endl;
-        return;
-    }
 
-    uintptr_t callbackField = 0;
-    __try {
-        for (uintptr_t off = 0;
-             off <= 0xB8;
-             off += sizeof(uintptr_t)) {
-            const uintptr_t value =
-                *reinterpret_cast<const uintptr_t*>(record + off);
-
-            if (value == scriptMain) {
-                callbackField = off;
-                break;
-            }
+        if (!candidate) {
+            continue;
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        callbackField = 0;
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(
+                reinterpret_cast<const void*>(candidate),
+                &mbi,
+                sizeof(mbi)) != sizeof(mbi) ||
+            mbi.State != MEM_COMMIT ||
+            (mbi.Protect & PAGE_GUARD) ||
+            (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+            continue;
+        }
+
+        HMODULE recordModule = nullptr;
+        uintptr_t recordCallback = 0;
+        uintptr_t recordFiber = 0;
+        uint32_t recordId = 0;
+
+        __try {
+            recordModule =
+                *reinterpret_cast<HMODULE*>(candidate + 0x00);
+            recordCallback =
+                *reinterpret_cast<const uintptr_t*>(candidate + 0x60);
+            recordFiber =
+                *reinterpret_cast<const uintptr_t*>(candidate + 0x68);
+            recordId =
+                *reinterpret_cast<const uint32_t*>(candidate + 0x8c);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
+
+        if (recordModule != frontierModule ||
+            !recordCallback ||
+            !recordFiber ||
+            recordId == 0) {
+            continue;
+        }
+
+        record = candidate;
+        scriptId = recordId;
+        fiber = recordFiber;
+        callbackObject = recordCallback;
+        return true;
     }
 
-    std::cout
-        << "[ScriptBridge] Registro ScriptHookRDR: record=0x"
-        << std::hex << record
-        << " moduleFieldOffset="
-        << moduleField
-        << " scriptMainFieldOffset="
-        << callbackField
-        << " fiber=0x"
-        << fiberField
-        << " scriptId=0x"
-        << scriptId
-        << std::dec
-        << std::endl;
+    return false;
 }
-
 
 void resolveScriptHook(HMODULE frontierModule) {
     (void)frontierModule;
@@ -419,43 +370,204 @@ void ScriptBridge::initialize(HMODULE module) {
     }
 }
 
+bool ScriptBridge::installRunDispatchHook(HMODULE hookModule) {
+    if (!hookModule) {
+        return false;
+    }
+
+    if (s_runDispatchHookInstalled.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    const auto target = reinterpret_cast<LPVOID>(
+        reinterpret_cast<uintptr_t>(hookModule) +
+        kScriptHookRunDetourRva);
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(
+            target, &mbi, sizeof(mbi)) != sizeof(mbi) ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_GUARD) ||
+        (mbi.Protect & 0xff) == PAGE_NOACCESS) {
+        return false;
+    }
+
+    const MH_STATUS createStatus = MH_CreateHook(
+        target,
+        reinterpret_cast<LPVOID>(&ScriptBridge::hookedScriptHookRun),
+        reinterpret_cast<LPVOID*>(&s_originalScriptHookRunDetour));
+
+    if (createStatus != MH_OK &&
+        createStatus != MH_ERROR_ALREADY_CREATED) {
+        if (!s_runDispatchFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] No se pudo instalar el dispatcher "
+                   "sobre rage::scrThread::Run de ScriptHookRDR. MH_STATUS="
+                << static_cast<int>(createStatus)
+                << std::endl;
+        }
+        return false;
+    }
+
+    if (!s_originalScriptHookRunDetour) {
+        if (!s_runDispatchFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] ScriptHookRDR::Run ya tenía un hook y "
+                   "no se obtuvo un trampoline válido."
+                << std::endl;
+        }
+        return false;
+    }
+
+    const MH_STATUS enableStatus = MH_EnableHook(target);
+    if (enableStatus != MH_OK &&
+        enableStatus != MH_ERROR_ENABLED) {
+        if (!s_runDispatchFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] No se pudo activar el dispatcher de "
+                   "rage::scrThread::Run. MH_STATUS="
+                << static_cast<int>(enableStatus)
+                << std::endl;
+        }
+        return false;
+    }
+
+    s_scriptStartById =
+        reinterpret_cast<ScriptStartByIdFn>(
+            reinterpret_cast<uintptr_t>(hookModule) +
+            kScriptStartByIdRva);
+
+    s_runDispatchHookInstalled.store(
+        true, std::memory_order_release);
+
+    std::cout
+        << "[ScriptBridge] Dispatcher ScriptHookRDR instalado: "
+           "Run post-procesará el Script ID de Frontier."
+        << std::endl;
+
+    return true;
+}
+
+std::uint64_t __cdecl ScriptBridge::hookedScriptHookRun(
+    uintptr_t scriptThread,
+    uintptr_t param2)
+{
+    const uint64_t result =
+        s_originalScriptHookRunDetour
+        ? s_originalScriptHookRunDetour(scriptThread, param2)
+        : 0;
+
+    if (!s_registrationRequested.load(
+            std::memory_order_acquire) ||
+        s_registered.load(std::memory_order_acquire)) {
+        return result;
+    }
+
+    const HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+
+    if (!hookModule) {
+        return result;
+    }
+
+    dispatchRegisteredScript(
+        reinterpret_cast<uintptr_t>(hookModule));
+
+    return result;
+}
+
+void ScriptBridge::dispatchRegisteredScript(
+    uintptr_t hookModuleBase)
+{
+    if (!hookModuleBase ||
+        s_registered.load(std::memory_order_acquire) ||
+        !s_registrationRequested.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (!s_scriptStartById) {
+        s_scriptStartById =
+            reinterpret_cast<ScriptStartByIdFn>(
+                hookModuleBase + kScriptStartByIdRva);
+    }
+
+    const HMODULE hookModule =
+        reinterpret_cast<HMODULE>(hookModuleBase);
+
+    HMODULE frontierModule = nullptr;
+        frontierModule = GetModuleHandleA("frontier_core.dll");
+
+    uintptr_t record = 0;
+    uint32_t scriptId = 0;
+    uintptr_t fiber = 0;
+    uintptr_t callbackObject = 0;
+
+    if (!readFrontierScriptRecord(
+            hookModule,
+            frontierModule,
+            record,
+            scriptId,
+            fiber,
+            callbackObject)) {
+        return;
+    }
+
+    static std::atomic<bool> dispatchLogged{false};
+    if (!dispatchLogged.exchange(
+            true, std::memory_order_acq_rel)) {
+        std::cout
+            << "[ScriptBridge] ScriptHookRDR tiene listo el script "
+               "Frontier: record=0x"
+            << std::hex << record
+            << " ScriptId=0x" << scriptId
+            << " fiber=0x" << fiber
+            << " callback=0x" << callbackObject
+            << std::dec
+            << ". Iniciando mediante FUN_180031a20."
+            << std::endl;
+    }
+
+    if (!s_scriptStartById) {
+        return;
+    }
+
+    __try {
+        s_scriptStartById(scriptId);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        static std::atomic<bool> dispatchFailureLogged{false};
+        if (!dispatchFailureLogged.exchange(
+                true, std::memory_order_acq_rel)) {
+            std::cerr
+                << "[ScriptBridge] Excepción al iniciar el fiber "
+                   "Frontier mediante FUN_180031a20. code=0x"
+                << std::hex << GetExceptionCode()
+                << std::dec << std::endl;
+        }
+    }
+}
+
 void ScriptBridge::update(HMODULE module) {
     if (!module) {
         return;
     }
 
-    static std::atomic<bool> registrationStateLogged{false};
-    if (s_registrationRequested.load(std::memory_order_acquire) &&
-        !s_registered.load(std::memory_order_acquire) &&
-        !registrationStateLogged.exchange(true, std::memory_order_acq_rel)) {
+    const HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
 
-        const HMODULE hookModule =
-            GetModuleHandleA("ScriptHookRDR.dll");
-
-        const size_t pendingRegistrations =
-            readScriptHookVectorCount(hookModule, 0x20e108);
-
-        const size_t scriptStacks =
-            readScriptHookVectorCount(hookModule, 0x20e0f0);
-
-        std::cout
-            << "[ScriptBridge] Diagnóstico post-scriptRegister: "
-               "registrationRequested=1, "
-               "pendingRegistrationEntries="
-            << pendingRegistrations
-            << ", scriptStackEntries="
-            << scriptStacks
-            << ", scriptMainStarted=0."
-            << std::endl;
-        logRegisteredScriptRecord(
-            hookModule, module);
+    if (hookModule) {
+        installRunDispatchHook(hookModule);
     }
 
-    // Normally registration succeeds during initialize(). This remains a
-    // cheap retry path in case ScriptHookRDR was not yet mapped when the
-    // Frontier worker first started.
+    // Fallback only when early registration was impossible. No internal
+    // ScriptHook function is invoked from the Frontier worker.
     tryRegister(module);
 }
+
+}
+
 
 bool ScriptBridge::isRegistered() {
     return s_registered.load(std::memory_order_acquire);
