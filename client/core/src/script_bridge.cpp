@@ -445,7 +445,13 @@ void ScriptBridge::pumpRegisteredScript(uintptr_t hookModuleBase) {
         }
     }
 
-    if (state.scriptId == 0 || state.scriptFiber == 0) {
+    // ScriptHookRDR uses UINT32_MAX (-1) as the "not assigned yet"
+    // sentinel for a registered script record. Never pass that value to the
+    // internal start-by-id routine: it can dereference an invalid slot.
+    constexpr uint32_t kUnassignedScriptId = UINT32_MAX;
+    if (state.scriptId == 0 ||
+        state.scriptId == kUnassignedScriptId ||
+        state.scriptFiber == 0) {
         return;
     }
 
@@ -608,10 +614,32 @@ void __cdecl ScriptBridge::scriptMain() {
         << std::endl;
 
     for (;;) {
-        runFrame();
+        __try {
+            runFrame();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            std::cerr
+                << "[ScriptBridge] ACCESS VIOLATION/excepción SEH en runFrame. "
+                   "code=0x"
+                << std::hex << GetExceptionCode()
+                << std::dec
+                << ". Se aborta únicamente el script Frontier; RDR continúa."
+                << std::endl;
+            return;
+        }
 
         if (s_scriptWait) {
-            s_scriptWait(0);
+            __try {
+                s_scriptWait(0);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                std::cerr
+                    << "[ScriptBridge] ACCESS VIOLATION/excepción SEH en "
+                       "scriptWait. code=0x"
+                    << std::hex << GetExceptionCode()
+                    << std::dec
+                    << ". Se aborta únicamente el script Frontier; RDR continúa."
+                    << std::endl;
+                return;
+            }
         } else {
             return;
         }
