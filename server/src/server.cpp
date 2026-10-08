@@ -109,6 +109,9 @@ bool Server::loadConfig(const std::string& path) {
         if (line.find("port =") != std::string::npos) {
             size_t eq = line.find('=');
             m_config.port = static_cast<uint16_t>(std::stoi(line.substr(eq + 1)));
+        } else if (line.find("http_port =") != std::string::npos) {
+            size_t eq = line.find('=');
+            m_config.httpPort = static_cast<uint16_t>(std::stoi(line.substr(eq + 1)));
         } else if (line.find("max_players =") != std::string::npos) {
             size_t eq = line.find('=');
             m_config.maxPlayers = static_cast<uint32_t>(std::stoi(line.substr(eq + 1)));
