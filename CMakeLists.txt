@@ -8,8 +8,8 @@ include(FetchContent)
 FetchContent_Declare(
     frontier_enet
     GIT_REPOSITORY https://github.com/lsalzman/enet.git
-    GIT_TAG 1.3.18
-    GIT_SHALLOW TRUE
+    GIT_TAG 2662c0de09e36f2a2030ccc2c528a3e4c9e8138a
+    GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(frontier_enet)
 
