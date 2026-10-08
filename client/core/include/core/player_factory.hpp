@@ -22,6 +22,7 @@ public:
     static void destroyActor(uintptr_t actorPtr);
 
     static uintptr_t getLocalPlayerActor();
+    static bool isLocalPlayerReady();
     static void enablePlayerControl(bool enable);
 };
 
