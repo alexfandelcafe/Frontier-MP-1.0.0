@@ -19,6 +19,10 @@ if(TARGET enet)
     target_include_directories(enet PUBLIC
         "${frontier_enet_SOURCE_DIR}/include"
     )
+
+    if(WIN32)
+        target_link_libraries(enet PUBLIC winmm ws2_32)
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
