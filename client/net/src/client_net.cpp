@@ -232,7 +232,6 @@ void ClientNetwork::disconnect() {
     m_loadResourcesStarted.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
-    m_loadingScreenVisible.store(false, std::memory_order_release);
     m_clientWelcomeDeadline = {};
     UI::D3D11Renderer::get().setLoadingScreenVisible(false, "");
     m_localPlayerObserved.store(false, std::memory_order_release);
