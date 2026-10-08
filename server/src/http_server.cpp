@@ -275,9 +275,17 @@ void HttpServer::listenLoop() {
 
         m_failed.store(true, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
+#ifdef _WIN32
+        const int error = WSAGetLastError();
+#else
+        const int error = errno;
+#endif
         std::cerr
             << "[HttpServer] Failed to bind port "
             << m_port
+            << " (socket error "
+            << error
+            << ")."
             << std::endl;
         m_ready.store(false, std::memory_order_release);
     closesocket(serverSock);
@@ -288,10 +296,17 @@ void HttpServer::listenLoop() {
     }
 
     if (listen(serverSock, 16) == SOCKET_ERROR) {
+#ifdef _WIN32
+        const int error = WSAGetLastError();
+#else
+        const int error = errno;
+#endif
         m_failed.store(true, std::memory_order_release);
         m_running.store(false, std::memory_order_release);
         std::cerr
-            << "[HttpServer] listen() failed."
+            << "[HttpServer] listen() failed (socket error "
+            << error
+            << ")."
             << std::endl;
         closesocket(serverSock);
 #ifdef _WIN32
