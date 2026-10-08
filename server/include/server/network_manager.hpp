@@ -28,7 +28,12 @@ public:
     uint16_t getPort() const { return m_port; }
 
 private:
-    void processPacket(PlayerId senderId, Protocol::Channel channel, const uint8_t* data, size_t size);
+    void processPacket(
+        PlayerId senderId,
+        void* peer,
+        Protocol::Channel channel,
+        const uint8_t* data,
+        size_t size);
     PlayerId ensurePlayerForPeer(void* peer, const std::string& name = {});
 
 
