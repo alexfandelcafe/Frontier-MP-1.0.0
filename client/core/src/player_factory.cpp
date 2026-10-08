@@ -15,7 +15,7 @@ std::atomic<bool> s_modelRequested{false};
 Vector3 s_pendingPosition{};
 float s_pendingHeading{0.0f};
 ModelHash s_pendingModel{0};
-uintptr_t s_localActor{0};
+std::atomic<uintptr_t> s_localActor{0};
 uint32_t s_spawnPollCounter{0};
 }
 
@@ -44,6 +44,7 @@ bool PlayerFactory::requestAndStreamModel(ModelHash modelHash, uint32_t timeoutM
 }
 
 void PlayerFactory::requestLocalPlayerSpawn(const Vector3& position, float heading, ModelHash modelHash) {
+    s_localActor.store(0, std::memory_order_release);
     s_pendingPosition = position;
     s_pendingHeading = heading;
     s_pendingModel = modelHash;
@@ -93,7 +94,7 @@ void PlayerFactory::processPendingSpawn() {
         return;
     }
 
-    s_localActor = actor;
+    s_localActor.store(actor, std::memory_order_release);
     s_spawnPending.store(false, std::memory_order_release);
     s_modelRequested.store(false, std::memory_order_release);
     enablePlayerControl(true);
@@ -167,7 +168,11 @@ void PlayerFactory::destroyActor(uintptr_t actorPtr) {
 }
 
 uintptr_t PlayerFactory::getLocalPlayerActor() {
-    return NativeInvoker::invoke<uintptr_t>(Natives::GET_PLAYER_ACTOR, -1);
+    return s_localActor.load(std::memory_order_acquire);
+}
+
+bool PlayerFactory::isLocalPlayerReady() {
+    return s_localActor.load(std::memory_order_acquire) != 0;
 }
 
 void PlayerFactory::enablePlayerControl(bool enable) {
