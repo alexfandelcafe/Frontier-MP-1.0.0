@@ -21,7 +21,7 @@ enum class PacketId : uint16_t {
     // entre ENet y la transición al Loading World.
     HandshakeRequest = 0x01,
     HandshakeResponse = 0x02,
-    ClientWelcome = 0x03,
+    ClientWelcome = 0x00,
     ServerData = 0x04,
     PlayerJoined = 0x05,
     PlayerLeft = 0x06,
