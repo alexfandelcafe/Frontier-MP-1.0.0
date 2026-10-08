@@ -115,6 +115,10 @@ void EngineHooks::shutdown() {
     MH_Uninitialize();
 }
 
+bool EngineHooks::isGameRenderReady() {
+    return s_swapChainCreateCount.load(std::memory_order_acquire) >= 2;
+}
+
 bool EngineHooks::isSingleplayerBlocked() {
     return s_blockSingleplayer;
 }
