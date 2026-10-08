@@ -52,6 +52,11 @@ target_include_directories(frontier_core PRIVATE
     ${MINHOOK_ROOT}/include
 )
 
+target_compile_definitions(frontier_core PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
 target_link_libraries(frontier_core PRIVATE
     frontier_shared
     minhook
