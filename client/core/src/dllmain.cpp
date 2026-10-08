@@ -162,8 +162,9 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
-        // ScriptHookRDR is loaded first by the launcher while the game is
-        // suspended. Keep DLL attach free of ScriptHook calls; registration is handled by the client worker after ScriptHook initialization.
+        // The launcher maps ScriptHookRDR.dll before frontier_core.dll while
+        // RDR.exe is suspended. registerScriptEarly therefore mirrors the
+        // normal ScriptHook SDK/ASI lifecycle and happens before RAGE resumes.
         Frontier::Core::ScriptBridge::registerScriptEarly(hModule);
 
         DisableThreadLibraryCalls(hModule);
