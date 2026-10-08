@@ -497,8 +497,8 @@ void ScriptBridge::dispatchRegisteredScript(
     const HMODULE hookModule =
         reinterpret_cast<HMODULE>(hookModuleBase);
 
-    HMODULE frontierModule = nullptr;
-        frontierModule = GetModuleHandleA("frontier_core.dll");
+    const HMODULE frontierModule =
+        GetModuleHandleA("frontier_core.dll");
 
     uintptr_t record = 0;
     uint32_t scriptId = 0;
@@ -515,8 +515,7 @@ void ScriptBridge::dispatchRegisteredScript(
         return;
     }
 
-    static std::atomic<bool> dispatchLogged{false};
-    if (!dispatchLogged.exchange(
+    if (!s_scriptDispatchLogged.exchange(
             true, std::memory_order_acq_rel)) {
         std::cout
             << "[ScriptBridge] ScriptHookRDR tiene listo el script "
@@ -566,9 +565,6 @@ void ScriptBridge::update(HMODULE module) {
     tryRegister(module);
 }
 
-}
-
-
 bool ScriptBridge::isRegistered() {
     return s_registered.load(std::memory_order_acquire);
 }
@@ -585,6 +581,11 @@ void __cdecl ScriptBridge::scriptMain() {
     std::cout
         << "[ScriptBridge] ScriptMain iniciado dentro del scheduler normal "
            "de ScriptHookRDR."
+        << std::endl;
+
+    std::cout
+        << "[ScriptBridge] ScriptMain ejecutándose en el fiber gestionado por "
+           "ScriptHookRDR."
         << std::endl;
 
     for (;;) {
