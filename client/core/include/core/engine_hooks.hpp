@@ -38,7 +38,6 @@ public:
 
 private:
     static bool hookGraphics();
-    static bool hookScriptThread();
 
     static inline HWND s_gameHwnd{NULL};
     static inline WNDPROC s_originalWndProc{nullptr};
