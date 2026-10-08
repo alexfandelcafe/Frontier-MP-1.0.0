@@ -461,8 +461,15 @@ std::uint64_t __cdecl ScriptBridge::hookedScriptHookRun(
         : 0;
 
     if (!s_registrationRequested.load(
-            std::memory_order_acquire) ||
-        s_registered.load(std::memory_order_acquire)) {
+            std::memory_order_acquire)) {
+        return result;
+    }
+
+    // Re-entering the ScriptHook Run detour while the Frontier fiber is
+    // currently executing would attempt a nested SwitchToFiber(). Keep the
+    // dispatch one-at-a-time per RAGE script thread.
+    thread_local bool dispatchInProgress = false;
+    if (dispatchInProgress) {
         return result;
     }
 
@@ -473,8 +480,10 @@ std::uint64_t __cdecl ScriptBridge::hookedScriptHookRun(
         return result;
     }
 
+    dispatchInProgress = true;
     dispatchRegisteredScript(
         reinterpret_cast<uintptr_t>(hookModule));
+    dispatchInProgress = false;
 
     return result;
 }
@@ -483,7 +492,6 @@ void ScriptBridge::dispatchRegisteredScript(
     uintptr_t hookModuleBase)
 {
     if (!hookModuleBase ||
-        s_registered.load(std::memory_order_acquire) ||
         !s_registrationRequested.load(std::memory_order_acquire)) {
         return;
     }
