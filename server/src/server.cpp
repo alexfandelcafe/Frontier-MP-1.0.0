@@ -164,41 +164,95 @@ void Server::tick() {
     // Sincronización continua de entidades
 }
 
-void Server::handlePlayerHandshake(PlayerId id, const std::string& playerName, ModelHash model) {
+void Server::handlePlayerHandshake(
+    PlayerId id,
+    const std::string& playerName,
+    ModelHash model)
+{
     auto player = m_playerManager.getPlayer(id);
     if (!player) return;
 
     player->name = playerName;
     player->modelHash = model;
+    player->position = Vector3(-180.0f, 60.0f, 1950.0f);
+    player->heading = 0.0f;
+    player->isSpawned = false;
 
-    std::cout << "[Server] Player connected: " << playerName << " (ID: " << id << ")" << std::endl;
+    std::cout
+        << "[Server] Player connected: "
+        << playerName << " (ID: " << id << ")"
+        << std::endl;
 
-    // Enviar HandshakeResponse al jugador que conectó
-    BitStream response;
-    response.write<uint16_t>(static_cast<uint16_t>(Protocol::PacketId::HandshakeResponse));
-    response.write<PlayerId>(id);
-    response.writeString(m_config.serverName);
-    response.write<uint32_t>(m_config.tickRate);
-    m_networkManager.sendPacket(id, Protocol::ChannelReliable, response, true);
+    // Este es el equivalente Frontier al packet 4 de ServerData del cliente
+    // original: el ID del paquete es 0x04 y el campo de versión debe coincidir
+    // exactamente con el build de cliente que estamos reproduciendo.
+    BitStream serverData;
+    serverData.write<uint16_t>(
+        static_cast<uint16_t>(Protocol::PacketId::ServerData));
+    serverData.write<PlayerId>(id);
+    serverData.writeString(m_config.serverName);
+    serverData.writeString("Alpha vpre-0.0.5");
+    serverData.write<uint16_t>(m_config.httpPort);
+    serverData.write<ModelHash>(model);
+    serverData.writeVector3(player->position);
+    serverData.write<float>(player->heading);
 
-    // Enviar lista de recursos en ejecución para que el cliente los inicie
-    BitStream resList;
-    resList.write<uint16_t>(static_cast<uint16_t>(Protocol::PacketId::ResourceListResponse));
-    auto runningRes = m_resourceManager.getRunningResources();
-    resList.write<uint16_t>(static_cast<uint16_t>(runningRes.size()));
-    for (const auto& res : runningRes) {
-        resList.writeString(res);
+    if (!m_networkManager.sendPacket(
+            id,
+            Protocol::ChannelReliable,
+            serverData,
+            true)) {
+
+        std::cerr
+            << "[Server] failed_server_sending_server_data: "
+               "no se pudo enviar packet 4 al jugador "
+            << id << std::endl;
+        return;
     }
-    m_networkManager.sendPacket(id, Protocol::ChannelReliable, resList, true);
 
-    // Notificar a Lua y al resto de jugadores
+    // Los recursos se descubren por HTTP durante DownloadResources("cache\\").
+    // No necesitamos enviar una lista de archivos por ENet.
     m_luaEnvironment.onPlayerJoin(id, playerName);
 
     BitStream joinNotify;
-    joinNotify.write<uint16_t>(static_cast<uint16_t>(Protocol::PacketId::PlayerJoined));
+    joinNotify.write<uint16_t>(
+        static_cast<uint16_t>(Protocol::PacketId::PlayerJoined));
     joinNotify.write<PlayerId>(id);
     joinNotify.writeString(playerName);
-    m_networkManager.broadcast(Protocol::ChannelReliable, joinNotify, true, id);
+
+    m_networkManager.broadcast(
+        Protocol::ChannelReliable,
+        joinNotify,
+        true,
+        id);
+}
+
+void Server::handleClientWelcome(
+    PlayerId id,
+    ModelHash model,
+    const std::string& playerName,
+    const Vector3& position,
+    const Vector3& rotation)
+{
+    auto player = m_playerManager.getPlayer(id);
+    if (!player) return;
+
+    player->modelHash = model;
+    player->name = playerName;
+    player->position = position;
+    player->heading = rotation.z;
+    player->isSpawned = true;
+
+    std::cout
+        << "[Server] ClientWelcome recibido de "
+        << playerName << " (ID: " << id << "). "
+           "Jugador marcado como spawned."
+        << std::endl;
+
+    m_luaEnvironment.triggerEvent(
+        "player:ready",
+        id,
+        {playerName});
 }
 
 void Server::handlePlayerSync(PlayerId id, const Protocol::PlayerSyncPacket& syncData) {
