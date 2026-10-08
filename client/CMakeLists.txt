@@ -39,6 +39,7 @@ add_library(frontier_core SHARED
     core/src/script_bridge.cpp
     core/src/player_factory.cpp
     net/src/client_net.cpp
+    net/src/resource_client.cpp
     ui/src/cef_manager.cpp
     ui/src/d3d11_renderer.cpp
 )
@@ -54,10 +55,11 @@ target_include_directories(frontier_core PRIVATE
 target_link_libraries(frontier_core PRIVATE
     frontier_shared
     minhook
+    enet
 )
 
 if(WIN32)
-    target_link_libraries(frontier_core PRIVATE d3d12 d3d11 dxgi d3dcompiler)
+    target_link_libraries(frontier_core PRIVATE d3d12 d3d11 dxgi d3dcompiler winhttp)
 endif()
 
 set_target_properties(frontier_core PROPERTIES
