@@ -54,7 +54,7 @@ public:
 
 private:
     ClientNetwork() = default;
-    ~ClientNetwork() = default;
+    ~ClientNetwork();
 
     void processPacket(Protocol::Channel channel, const uint8_t* data, size_t size);
     void beginServerDataLoading();
