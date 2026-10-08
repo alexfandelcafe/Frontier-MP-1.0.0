@@ -3,7 +3,6 @@
 #include "core/native_hashes.hpp"
 #include "core/player_factory.hpp"
 #include "core/script_bridge.hpp"
-#include "core/pattern_scanner.hpp"
 #include "ui/d3d11_renderer.hpp"
 #include <MinHook.h>
 #include <iostream>
@@ -41,8 +40,6 @@ static IDXGISwapChain* s_pLastSwapChain = nullptr;
 static std::atomic<bool> s_multiplayerWorldRequested{false};
 static std::atomic<bool> s_multiplayerPreparationStarted{false};
 static std::atomic<bool> s_multiplayerTransitionStarted{false};
-static void __fastcall HookedWait(void* scrThread, uint32_t waitTime);
-static void* s_originalWait = nullptr;
 
 bool EngineHooks::initialize() {
     std::cout << "[EngineHooks] Inicializando MinHook e interceptor seguro..." << std::endl;
@@ -84,9 +81,9 @@ bool EngineHooks::initialize() {
         }
     }).detach();
 
-    // 4. Hook del hilo de scripts de RAGE para bloquear la campaña
-    hookScriptThread();
-
+    // 4. ScriptHookRDR owns the script scheduler. Frontier registers a
+    // public ScriptMain callback through ScriptBridge; no private Wait hook is
+    // installed here.
     return true;
 }
 
@@ -327,117 +324,6 @@ void EngineHooks::processMultiplayerWorldLoad() {
     PlayerFactory::processPendingSpawn();
 }
 
-static void __fastcall HookedWait(void* scrThread, uint32_t waitTime) {
-    if (NativeInvoker::isReady()) {
-        // LoadOnline del cliente original corre dentro de una fibra de script.
-        // Usamos Wait() como punto seguro de entrada: aquí ya estamos dentro
-        // del contexto RAGE que puede despachar nativas y ceder al scheduler.
-        if (s_multiplayerWorldRequested.load(std::memory_order_acquire)) {
-            EngineHooks::processMultiplayerWorldLoad();
-
-            // processMultiplayerWorldLoad() puede haber dejado el mundo todavía
-            // cargando; no alteramos el wait del script salvo para mantener la
-            // cesión cooperativa que usa el cliente original.
-            if (s_originalWait) {
-                reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
-                    s_originalWait)(scrThread, 0);
-            }
-            return;
-        }
-
-        // Mantener bloqueada la entrada de historia mientras el frontend está activo.
-        const char* scriptName =
-            NativeInvoker::invoke<const char*>(Natives::GET_SCRIPT_NAME);
-        const bool isTransitionScript =
-            scriptName &&
-            (std::strcmp(scriptName, "press_start") == 0 ||
-             std::strcmp(scriptName, "main") == 0);
-
-        if (isTransitionScript && EngineHooks::isSingleplayerBlocked()) {
-            if (s_originalWait) {
-                reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
-                    s_originalWait)(scrThread, 100);
-            }
-            return;
-        }
-    }
-
-    if (s_originalWait) {
-        reinterpret_cast<void(__fastcall*)(void*, uint32_t)>(
-            s_originalWait)(scrThread, waitTime);
-    }
-}
-
-bool EngineHooks::hookScriptThread() {
-    std::cout
-        << "[EngineHooks] Instalando punto de entrada sobre rage::scrThread::Wait..."
-        << std::endl;
-
-    const uintptr_t match =
-        PatternScanner::findPattern(nullptr, "E8 ? ? ? ? 8D 56 10");
-
-    if (!match) {
-        std::cerr
-            << "[EngineHooks] Patrón de rage::scrThread::Wait no encontrado; "
-               "no se instalará el hook de transición."
-            << std::endl;
-        return false;
-    }
-
-    const uintptr_t targetFunc =
-        PatternScanner::getRelativeAddress(match, 5, 1);
-
-    if (!targetFunc) {
-        std::cerr
-            << "[EngineHooks] No se pudo resolver rage::scrThread::Wait."
-            << std::endl;
-        return false;
-    }
-
-    const MH_STATUS createStatus =
-        MH_CreateHook(
-            reinterpret_cast<void*>(targetFunc),
-            reinterpret_cast<void*>(&HookedWait),
-            reinterpret_cast<void**>(&s_originalWait));
-
-    if (createStatus != MH_OK &&
-        createStatus != MH_ERROR_ALREADY_CREATED) {
-        std::cerr
-            << "[EngineHooks] MH_CreateHook para rage::scrThread::Wait falló. "
-               "MH_STATUS="
-            << static_cast<int>(createStatus)
-            << std::endl;
-        return false;
-    }
-
-    if (!s_originalWait) {
-        std::cerr
-            << "[EngineHooks] No se obtuvo trampoline para rage::scrThread::Wait."
-            << std::endl;
-        return false;
-    }
-
-    const MH_STATUS enableStatus =
-        MH_EnableHook(reinterpret_cast<void*>(targetFunc));
-
-    if (enableStatus != MH_OK &&
-        enableStatus != MH_ERROR_ENABLED) {
-        std::cerr
-            << "[EngineHooks] MH_EnableHook para rage::scrThread::Wait falló. "
-               "MH_STATUS="
-            << static_cast<int>(enableStatus)
-            << std::endl;
-        return false;
-    }
-
-    std::cout
-        << "[EngineHooks] rage::scrThread::Wait hook instalado en 0x"
-        << std::hex << targetFunc << std::dec
-        << ". La transición multiplayer podrá ejecutarse dentro de una fibra RAGE."
-        << std::endl;
-
-    return true;
-}
 void EngineHooks::setupSandboxWorld() {
     s_worldCleaned = true;
     std::cout << "[EngineHooks] ==========================================" << std::endl;
