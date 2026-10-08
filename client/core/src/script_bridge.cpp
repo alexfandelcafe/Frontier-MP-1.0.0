@@ -17,6 +17,7 @@ namespace {
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
 using ScriptStartByIdFn = void (*)(uint32_t);
+using ScriptHookMaintenanceFn = void (*)();
 using ScriptHookRunDetourFn = uint64_t (*)(uintptr_t, uintptr_t);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
