@@ -3,6 +3,7 @@
 #include "core/player_factory.hpp"
 #include "core/engine_hooks.hpp"
 #include "ui/cef_manager.hpp"
+#include "ui/d3d11_renderer.hpp"
 
 #include <enet/enet.h>
 
@@ -75,7 +76,6 @@ bool ClientNetwork::connect(
     m_loadResourcesStarted.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
-    m_loadingScreenVisible.store(false, std::memory_order_release);
     m_clientWelcomeDeadline = {};
 
     char modulePath[MAX_PATH] = {};
