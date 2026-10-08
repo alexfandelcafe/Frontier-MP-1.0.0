@@ -942,7 +942,8 @@ void D3D11Renderer::triggerConnect() {
     std::cout << "[D3D11Renderer] Conectando a " << m_serverIp << ":" << port
               << " como '" << m_playerName << "'..." << std::endl;
 
-    m_showMainMenu = false;
+    // Connect ya no fuerza directamente el loading. La transición real es:
+    // ENet -> ServerData(packet 4) -> HTTP resources -> LoadOnline/InitSpawn.
     m_showChat = true;
 
     const bool connected =
@@ -953,9 +954,8 @@ void D3D11Renderer::triggerConnect() {
         return;
     }
 
-    Core::EngineHooks::requestMultiplayerWorldLoad();
-    Core::PlayerFactory::requestLocalPlayerSpawn(
-        Vector3(-180.0f, 60.0f, 1950.0f), 0.0f, 837);
+    // El menú se oculta cuando el ServerData fue validado y comenzó la carga
+    // de recursos, no solo cuando se abrió el socket UDP.
 }
 
 bool D3D11Renderer::handleInput(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
