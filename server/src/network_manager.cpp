@@ -73,9 +73,11 @@ bool NetworkManager::start(
     m_running = true;
 
     std::cout
-        << "[NetworkManager] ENet UDP Listener active on "
-        << bindHost << ":" << port
-        << " (Max players: " << maxClients << ")"
+        << "[NetworkManager] ENet UDP Listener READY"
+        << " | bind=" << bindHost
+        << " | port=" << port
+        << " | maxPlayers=" << maxClients
+        << " | protocolVersion=Alpha vpre-0.0.5"
         << std::endl;
 
     return true;
