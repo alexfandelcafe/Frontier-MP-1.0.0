@@ -132,75 +132,6 @@ void resolveScriptHook() {
               << std::endl;
 }
 
-void ScriptBridge::registerScriptAtAttach(HMODULE module) {
-    if (!module ||
-        s_registered.load(std::memory_order_acquire) ||
-        s_registrationInFlight.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
-    if (!hookModule) {
-        OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no estaba cargado durante DLL attach.\\n");
-        return;
-    }
-
-    auto registerNormal =
-        resolveExport<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!registerNormal) {
-        registerNormal =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule,
-                "scriptRegister");
-    }
-
-    auto registerAdditional =
-        resolveExport<ScriptRegisterFn>(
-            hookModule,
-            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
-
-    if (!registerAdditional) {
-        registerAdditional =
-            resolveMangledExport<ScriptRegisterFn>(
-                hookModule,
-                "scriptRegisterAdditionalThread");
-    }
-
-    ScriptRegisterFn selected =
-        registerNormal ? registerNormal : registerAdditional;
-
-    if (!selected) {
-        OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no expone ninguna API de registro.\\n");
-        return;
-    }
-
-    selected(
-        module,
-        &ScriptBridge::scriptMain);
-
-    s_registrationMode.store(
-        registerNormal ? 1u : 2u,
-        std::memory_order_release);
-    s_registrationInFlight.store(
-        true,
-        std::memory_order_release);
-    s_lastRegistrationTick.store(
-        GetTickCount64(),
-        std::memory_order_release);
-
-    OutputDebugStringA(
-        registerNormal
-            ? "[FrontierClient] Frontier registrado mediante scriptRegister en DLL attach.\\n"
-            : "[FrontierClient] Frontier registrado mediante scriptRegisterAdditionalThread en DLL attach.\\n");
-}
-
-
 } // namespace
 
 void ScriptBridge::registerScriptAtAttach(HMODULE module) {
@@ -261,44 +192,73 @@ void ScriptBridge::registerScript(HMODULE module) {
             s_registrationMode.store(2, std::memory_order_release);
         }
 
-        s_registrationInFlight.store(false, std::memory_order_release);
+        s_void ScriptBridge::registerScriptAtAttach(HMODULE module) {
+    if (!module ||
+        s_registered.load(std::memory_order_acquire) ||
+        s_registrationInFlight.load(std::memory_order_acquire)) {
+        return;
     }
 
-    s_lastRegistrationTick.store(
-        now, std::memory_order_release);
+    HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule) {
+        OutputDebugStringA(
+            "[FrontierClient] ScriptHookRDR no estaba cargado durante DLL attach.\n");
+        return;
+    }
+
+    auto registerNormal =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!registerNormal) {
+        registerNormal =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule,
+                "scriptRegister");
+    }
+
+    auto registerAdditional =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!registerAdditional) {
+        registerAdditional =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule,
+                "scriptRegisterAdditionalThread");
+    }
+
+    ScriptRegisterFn selected =
+        registerNormal ? registerNormal : registerAdditional;
+
+    if (!selected) {
+        OutputDebugStringA(
+            "[FrontierClient] ScriptHookRDR no expone ninguna API de registro.\n");
+        return;
+    }
+
+    selected(module, &ScriptBridge::scriptMain);
+
+    s_registrationMode.store(
+        registerNormal ? 1u : 2u,
+        std::memory_order_release);
     s_registrationInFlight.store(
-        true, std::memory_order_release);
+        true,
+        std::memory_order_release);
+    s_lastRegistrationTick.store(
+        GetTickCount64(),
+        std::memory_order_release);
 
-    uint32_t mode = s_registrationMode.load(std::memory_order_acquire);
-    if (mode == 0) {
-        // Primer intento: scriptRegister. Es la ruta compatible con el
-        // ScriptHook actual y con plugins inyectados después del arranque.
-        mode = s_scriptRegisterFallback ? 1u : 2u;
-        s_registrationMode.store(mode, std::memory_order_release);
-    }
-
-    if (mode == 1 && s_scriptRegisterFallback) {
-        s_scriptRegisterFallback(
-            module, &ScriptBridge::scriptMain);
-
-        std::cout
-            << "[ScriptBridge] Registro solicitado mediante scriptRegister."
-            << std::endl;
-    } else if (mode == 2 && s_scriptRegisterAdditionalThread) {
-        s_scriptRegisterAdditionalThread(
-            module, &ScriptBridge::scriptMain);
-
-        std::cout
-            << "[ScriptBridge] Registro solicitado mediante "
-               "scriptRegisterAdditionalThread (fallback)."
-            << std::endl;
-    } else {
-        s_registrationInFlight.store(false, std::memory_order_release);
-        std::cerr
-            << "[ScriptBridge] No hay una ruta de registro válida disponible."
-            << std::endl;
-    }
+    OutputDebugStringA(
+        registerNormal
+            ? "[FrontierClient] Frontier registrado mediante scriptRegister en DLL attach.\n"
+            : "[FrontierClient] Frontier registrado mediante scriptRegisterAdditionalThread en DLL attach.\n");
 }
+
+
 
 bool ScriptBridge::isRegistered() {
     return s_registered.load(std::memory_order_acquire);
