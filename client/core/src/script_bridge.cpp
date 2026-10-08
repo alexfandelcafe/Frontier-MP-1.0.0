@@ -21,18 +21,18 @@ ScriptWaitFn s_scriptWait = nullptr;
 ScriptUnregisterFn s_scriptUnregister = nullptr;
 
 std::atomic<uint64_t> s_lastRetryTick{0};
-constexpr uint64_t kRegistrationRetryMs = 1500;
+std::atomic<bool> s_registrationInFlight{false};
+constexpr uint64_t kRegistrationRetryMs = 3000;
 
-ScriptRegisterFn resolveScriptRegisterAdditionalThread(HMODULE hookModule) {
+ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     if (!hookModule) {
         return nullptr;
     }
 
-    // Public RDR1 ScriptHook SDK entry point for an independently scheduled
-    // script thread. This avoids depending on the primary script queue.
+    // Public RDR1 ScriptHook SDK registration entry point.
     const FARPROC proc = GetProcAddress(
         hookModule,
-        "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+        "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
 
     return proc
         ? reinterpret_cast<ScriptRegisterFn>(proc)
@@ -75,57 +75,12 @@ void resolveRuntimeApi() {
         return;
     }
 
-    s_scriptRegister = resolveScriptRegisterAdditionalThread(hookModule);
+    s_scriptRegister = resolveScriptRegister(hookModule);
     s_scriptWait = resolveScriptWait(hookModule);
     s_scriptUnregister = resolveScriptUnregister(hookModule);
 }
 
 } // namespace
-
-void ScriptBridge::registerScriptAtAttach(HMODULE module) {
-    if (!module ||
-        s_registered.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    const HMODULE hookModule =
-        GetModuleHandleA("ScriptHookRDR.dll");
-
-    if (!hookModule) {
-        OutputDebugStringA(
-            "[FrontierClient] ScriptHookRDR no estaba cargado durante DLL attach.\n");
-        return;
-    }
-
-    // Keep DLL_PROCESS_ATTACH deliberately minimal. Register Frontier on
-    // ScriptHook's public additional-script queue, which has its own
-    // scheduler and does not require private ScriptHook internals.
-    if (!s_scriptRegister) {
-        s_scriptRegister =
-            resolveScriptRegisterAdditionalThread(hookModule);
-    }
-
-    if (!s_scriptRegister) {
-        OutputDebugStringA(
-            "[FrontierClient] scriptRegisterAdditionalThread no pudo resolverse durante DLL attach.\n");
-        return;
-    }
-
-    s_scriptRegister(
-        module,
-        &ScriptBridge::scriptMain);
-
-    s_registrationRequested.store(
-        true,
-        std::memory_order_release);
-
-    s_lastRetryTick.store(
-        GetTickCount64(),
-        std::memory_order_release);
-
-    OutputDebugStringA(
-        "[FrontierClient] scriptRegisterAdditionalThread llamado durante DLL_PROCESS_ATTACH.\n");
-}
 
 void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
@@ -151,25 +106,44 @@ void ScriptBridge::registerScript(HMODULE module) {
     const uint64_t last =
         s_lastRetryTick.load(std::memory_order_acquire);
 
+    if (s_registrationInFlight.load(std::memory_order_acquire)) {
+        if (last != 0 && now - last < kRegistrationRetryMs) {
+            return;
+        }
+
+        if (s_scriptUnregister) {
+            s_scriptUnregister(module);
+            std::cout
+                << "[ScriptBridge] Registro anterior retirado; "
+                   "reintentando con el scheduler de ScriptHookRDR."
+                << std::endl;
+        }
+
+        s_registrationInFlight.store(
+            false,
+            std::memory_order_release);
+    }
+
     if (last != 0 && now - last < kRegistrationRetryMs) {
         return;
     }
 
-    // If the attach-time attempt happened before ScriptHook's scheduler was
-    // ready, repeat the same public additional-thread registration call. No private scheduler
-    // internals are touched, and retries stop immediately once ScriptMain runs.
-    s_scriptRegister(module, &ScriptBridge::scriptMain);
+    s_scriptRegister(
+        module,
+        &ScriptBridge::scriptMain);
 
+    s_registrationInFlight.store(
+        true,
+        std::memory_order_release);
     s_registrationRequested.store(
         true,
         std::memory_order_release);
-
     s_lastRetryTick.store(
         now,
         std::memory_order_release);
 
     std::cout
-        << "[ScriptBridge] scriptRegisterAdditionalThread enviado/reintentado desde el worker; "
+        << "[ScriptBridge] scriptRegister enviado/reintentado desde el worker; "
            "esperando ScriptMain."
         << std::endl;
 }
@@ -184,6 +158,9 @@ void __cdecl ScriptBridge::scriptMain() {
         true,
         std::memory_order_release);
     s_registrationRequested.store(
+        false,
+        std::memory_order_release);
+    s_registrationInFlight.store(
         false,
         std::memory_order_release);
     resolveRuntimeApi();
