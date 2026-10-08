@@ -96,7 +96,7 @@ void ScriptBridge::registerScript(HMODULE module) {
                 std::memory_order_acq_rel)) {
             std::cerr
                 << "[ScriptBridge] ScriptHookRDR todavía no expone "
-                   "scriptRegisterAdditionalThread/scriptWait."
+                   "scriptRegister/scriptWait."
                 << std::endl;
         }
         return;
