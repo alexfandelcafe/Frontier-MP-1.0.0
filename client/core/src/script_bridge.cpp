@@ -73,6 +73,72 @@ T resolveMangledExport(HMODULE module, const char* token) {
     return nullptr;
 }
 
+void registerAtAttach(HMODULE module) {
+    if (!module ||
+        s_registered.load(std::memory_order_acquire) ||
+        s_registrationInFlight.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    HMODULE hookModule =
+        GetModuleHandleA("ScriptHookRDR.dll");
+    if (!hookModule) {
+        return;
+    }
+
+    auto registerNormal =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegister@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!registerNormal) {
+        registerNormal =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule,
+                "scriptRegister");
+    }
+
+    auto registerAdditional =
+        resolveExport<ScriptRegisterFn>(
+            hookModule,
+            "?scriptRegisterAdditionalThread@@YAXPEAUHINSTANCE__@@P6AXXZ@Z");
+
+    if (!registerAdditional) {
+        registerAdditional =
+            resolveMangledExport<ScriptRegisterFn>(
+                hookModule,
+                "scriptRegisterAdditionalThread");
+    }
+
+    ScriptRegisterFn selected =
+        registerNormal ? registerNormal : registerAdditional;
+
+    if (!selected) {
+        OutputDebugStringA(
+            "[FrontierClient] ScriptHookRDR no expone scriptRegister.\\n");
+        return;
+    }
+
+    selected(
+        module,
+        &ScriptBridge::scriptMain);
+
+    s_registrationMode.store(
+        registerNormal ? 1u : 2u,
+        std::memory_order_release);
+    s_registrationInFlight.store(
+        true,
+        std::memory_order_release);
+    s_lastRegistrationTick.store(
+        GetTickCount64(),
+        std::memory_order_release);
+
+    OutputDebugStringA(
+        registerNormal
+            ? "[FrontierClient] Frontier registered with ScriptHookRDR::scriptRegister.\\n"
+            : "[FrontierClient] Frontier registered with ScriptHookRDR::scriptRegisterAdditionalThread.\\n");
+}
+
 void resolveScriptHook() {
     HMODULE hookModule =
         GetModuleHandleA("ScriptHookRDR.dll");
@@ -133,6 +199,10 @@ void resolveScriptHook() {
 }
 
 } // namespace
+
+void ScriptBridge::registerScriptAtAttach(HMODULE module) {
+    registerAtAttach(module);
+}
 
 void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
