@@ -200,6 +200,7 @@ void ClientNetwork::disconnect() {
     m_resourcesReady.store(false, std::memory_order_release);
     m_resourceFailed.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
+    m_worldTransitionRequested.store(false, std::memory_order_release);
     m_localPlayerId = INVALID_PLAYER_ID;
     m_remotePlayers.clear();
 }
@@ -500,7 +501,20 @@ void ClientNetwork::processPacket(
                         << kProtocolVersion
                         << "', recibido '" << version << "'."
                         << std::endl;
-                    disconnect();
+
+                    m_resourceFailed.store(
+                        true,
+                        std::memory_order_release);
+
+                    // Keep the ENet host alive until the event pump has
+                    // returned; destroying it from inside processPacket would
+                    // invalidate the surrounding enet_host_service loop.
+                    if (m_enetPeer) {
+                        enet_peer_disconnect(
+                            m_enetPeer,
+                            1);
+                    }
+                    m_connected = false;
                     break;
                 }
 
