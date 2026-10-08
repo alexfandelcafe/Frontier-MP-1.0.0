@@ -216,7 +216,11 @@ void ClientNetwork::disconnect() {
     m_connectDeadline = {};
     UI::D3D11Renderer::get().setLoadingScreenVisible(false, "");
     m_localPlayerObserved.store(false, std::memory_order_release);
-    m_localPlayerId = INVALID_PLAYER_ID;void ClientNetwork::update() {
+    m_localPlayerId = INVALID_PLAYER_ID;
+    m_remotePlayers.clear();
+}
+
+void ClientNetwork::update() {
     // ENet I/O is exclusively owned by networkLoop(). This function only
     // advances game-thread state such as the multiplayer loading gate.
     if (m_resourcesReady.load(std::memory_order_acquire)) {
