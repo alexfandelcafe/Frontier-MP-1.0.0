@@ -10,6 +10,7 @@
 #include <thread>
 #include <atomic>
 #include <filesystem>
+#include <chrono>
 
 struct _ENetHost;
 struct _ENetPeer;
@@ -65,20 +66,25 @@ private:
     std::string m_playerName;
     std::string m_serverHost;
     uint16_t m_serverPort{0};
-    uint16_t m_httpPort{4675};
+    uint16_t m_httpPort{4674};
 
     ENetHost* m_enetHost{nullptr};
     ENetPeer* m_enetPeer{nullptr};
 
     std::atomic<bool> m_resourceLoading{false};
+    // resourcesReady means the equivalent of DownloadResources +
+    // ResourcesManager::LoadAllResources + DoesAllResourcesAreLoaded.
     std::atomic<bool> m_resourcesReady{false};
     std::atomic<bool> m_resourceFailed{false};
+    std::atomic<bool> m_loadResourcesStarted{false};
+    std::atomic<bool> m_loadingScreenVisible{false};
     std::atomic<bool> m_clientWelcomeSent{false};
     std::atomic<bool> m_worldTransitionRequested{false};
     std::atomic<bool> m_localPlayerObserved{false};
 
     std::thread m_resourceThread;
     std::filesystem::path m_cacheRoot;
+    std::chrono::steady_clock::time_point m_clientWelcomeDeadline{};
 
     Vector3 m_spawnPosition{-180.0f, 60.0f, 1950.0f};
     float m_spawnHeading{0.0f};
