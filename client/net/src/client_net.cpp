@@ -353,10 +353,6 @@ void ClientNetwork::networkLoop() {
             std::cout
                 << "[ClientNetwork] ClientWelcome packet 0 enviado por el hilo ENet."
                 << std::endl;
-
-            UI::D3D11Renderer::get().setLoadingScreenVisible(
-                true,
-                "Finalizing multiplayer session...");
         }
 
         if (m_connecting.load(std::memory_order_acquire) &&
@@ -610,6 +606,10 @@ void ClientNetwork::finishWorldLoadIfReady() {
         m_clientWelcomeQueued.store(
             true,
             std::memory_order_release);
+
+        UI::D3D11Renderer::get().setLoadingScreenVisible(
+            true,
+            "Finalizing multiplayer session...");
 
         std::cout
             << "[ClientNetwork] ClientWelcome encolado para el hilo ENet "
