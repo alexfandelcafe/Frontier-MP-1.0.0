@@ -16,7 +16,7 @@ namespace Frontier::Server {
 struct ServerConfig {
     std::string host{"0.0.0.0"};
     uint16_t port{DEFAULT_SERVER_PORT};
-    uint16_t httpPort{4675};
+    uint16_t httpPort{DEFAULT_SERVER_PORT};
     std::string serverName{"FrontierMP Dedicated Server - Wild West 1899"};
     uint32_t maxPlayers{32};
     uint32_t tickRate{30}; // 30 ticks por segundo
