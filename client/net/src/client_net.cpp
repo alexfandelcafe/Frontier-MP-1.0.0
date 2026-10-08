@@ -201,6 +201,7 @@ void ClientNetwork::disconnect() {
     m_resourceFailed.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
+    m_localPlayerObserved.store(false, std::memory_order_release);
     m_localPlayerId = INVALID_PLAYER_ID;
     m_remotePlayers.clear();
 }
@@ -395,54 +396,68 @@ void ClientNetwork::finishWorldLoadIfReady() {
         return;
     }
 
-    if (!m_clientWelcomeSent.load(std::memory_order_acquire)) {
-        if (!m_worldTransitionRequested.exchange(
-                true,
-                std::memory_order_acq_rel)) {
+    if (!m_worldTransitionRequested.exchange(
+            true,
+            std::memory_order_acq_rel)) {
 
-            Core::EngineHooks::requestMultiplayerWorldLoad();
+        // Equivalente a las dos fibers del cliente original: la transición
+        // comienza solo después de DownloadResources y el spawn queda
+        // programado en el ScriptHook thread.
+        Core::EngineHooks::requestMultiplayerWorldLoad();
 
-            Core::PlayerFactory::requestLocalPlayerSpawn(
-                m_spawnPosition,
-                m_spawnHeading,
-                m_spawnModel);
+        Core::PlayerFactory::requestLocalPlayerSpawn(
+            m_spawnPosition,
+            m_spawnHeading,
+            m_spawnModel);
 
-            UI::CefManager::get().setMainMenuVisible(false);
+        UI::CefManager::get().setMainMenuVisible(false);
 
-            std::cout
-                << "[ClientNetwork] LoadOnline/InitSpawn solicitado "
-                   "después de DownloadResources."
-                << std::endl;
-        }
+        std::cout
+            << "[ClientNetwork] LoadOnline/InitSpawn solicitado "
+               "después de DownloadResources."
+            << std::endl;
+    }
 
-        // GET_PLAYER_ACTOR/actor readiness is observed via the thread-safe state
-        // updated by PlayerFactory's ScriptHook script thread.
-        if (Core::PlayerFactory::isLocalPlayerReady()) {
-            BitStream bs;
-            bs.write<uint16_t>(
-                static_cast<uint16_t>(
-                    Protocol::PacketId::ClientWelcome));
-            bs.write<ModelHash>(m_spawnModel);
-            bs.writeString(m_playerName);
-            bs.writeVector3(m_spawnPosition);
-            bs.write<float>(0.0f);
-            bs.write<float>(0.0f);
-            bs.write<float>(m_spawnHeading);
+    // En el cliente original ClientWelcome se envía al terminar la carga de
+    // recursos; después la misma fiber espera GET_PLAYER_ACTOR.
+    if (!m_clientWelcomeSent.exchange(
+            true,
+            std::memory_order_acq_rel)) {
 
-            sendPacket(
-                Protocol::ChannelReliable,
-                bs,
-                true);
+        BitStream bs;
+        bs.write<uint16_t>(
+            static_cast<uint16_t>(
+                Protocol::PacketId::ClientWelcome));
+        bs.write<ModelHash>(m_spawnModel);
+        bs.writeString(m_playerName);
+        bs.writeVector3(m_spawnPosition);
+        bs.write<float>(0.0f);
+        bs.write<float>(0.0f);
+        bs.write<float>(m_spawnHeading);
 
-            m_clientWelcomeSent.store(
-                true,
-                std::memory_order_release);
+        sendPacket(
+            Protocol::ChannelReliable,
+            bs,
+            true);
 
-            std::cout
-                << "[ClientNetwork] ClientWelcome enviado: "
-                   "cliente listo después de cargar recursos y crear actor."
-                << std::endl;
-        }
+        std::cout
+            << "[ClientNetwork] ClientWelcome enviado después de "
+               "DownloadResources."
+            << std::endl;
+    }
+
+    // Equivalente a DoesAllResourcesAreLoaded() + GET_PLAYER_ACTOR: no se
+    // toca ningún native aquí; PlayerFactory publica el resultado desde su
+    // ScriptHook thread.
+    if (Core::PlayerFactory::isLocalPlayerReady() &&
+        !m_localPlayerObserved.exchange(
+            true,
+            std::memory_order_acq_rel)) {
+
+        std::cout
+            << "[ClientNetwork] GET_PLAYER_ACTOR listo; "
+               "jugador local observado. In Multiplayer."
+            << std::endl;
     }
 }
 
