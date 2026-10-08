@@ -43,6 +43,12 @@ public:
 
     // Handlers de red
     void handlePlayerHandshake(PlayerId id, const std::string& playerName, ModelHash model);
+    void handleClientWelcome(
+        PlayerId id,
+        ModelHash model,
+        const std::string& playerName,
+        const Vector3& position,
+        const Vector3& rotation);
     void handlePlayerSync(PlayerId id, const Protocol::PlayerSyncPacket& syncData);
     void handlePlayerDisconnect(PlayerId id, const std::string& reason);
     void handleClientEvent(PlayerId id, const std::string& eventName, const ScriptEventArgs& args);
