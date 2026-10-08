@@ -47,29 +47,73 @@ bool ClientNetwork::connect(
     uint16_t port,
     const std::string& playerName)
 {
-    // A duplicate UI click/key event must not tear down an already valid
-    // ENet connection. ServerData(0x04) is processed asynchronously by update().
-    if (m_connected) {
+    if (m_connected.load(std::memory_order_acquire) ||
+        m_connecting.load(std::memory_order_acquire) ||
+        m_connectRequested.load(std::memory_order_acquire)) {
+
         std::cout
-            << "[ClientNetwork] Connect ignored: already connected to "
-            << m_serverHost << ":" << m_serverPort << "."
+            << "[ClientNetwork] Connect ignored: "
+               "ya existe una conexión o intento pendiente."
             << std::endl;
         return true;
     }
 
-    if (m_enetPeer || m_enetHost) {
-        disconnect();
+    {
+        std::lock_guard<std::mutex> lock(m_connectionRequestMutex);
+        m_requestedHost = host;
+        m_requestedPort = port;
+        m_requestedPlayerName = playerName;
+    }
+
+    m_connectRequested.store(true, std::memory_order_release);
+
+    std::cout
+        << "[ClientNetwork] ENet connection request queued for "
+        << host << ":" << port
+        << " as '" << playerName
+        << "'; ENet I/O will run exclusively on ClientNetwork::update()."
+        << std::endl;
+
+    return true;
+}
+
+void ClientNetwork::startPendingConnection() {
+    if (!m_connectRequested.exchange(
+            false,
+            std::memory_order_acq_rel)) {
+        return;
+    }
+
+    std::string host;
+    std::string playerName;
+    uint16_t port = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_connectionRequestMutex);
+        host = m_requestedHost;
+        port = m_requestedPort;
+        playerName = m_requestedPlayerName;
+    }
+
+    if (host.empty() || port == 0 || playerName.empty()) {
+        std::cerr
+            << "[ClientNetwork] Invalid pending connection request."
+            << std::endl;
+        return;
     }
 
     if (!ensureEnetInitialized()) {
-        std::cerr << "[ClientNetwork] ENet initialization failed." << std::endl;
-        return false;
+        std::cerr
+            << "[ClientNetwork] ENet initialization failed."
+            << std::endl;
+        return;
     }
 
     m_playerName = playerName;
     m_serverHost = host;
     m_serverPort = port;
-    m_httpPort = port; // Original RDRMP HTTPClient reuses ENet host/port.
+    m_httpPort = port;
+
     m_localPlayerId = INVALID_PLAYER_ID;
     m_resourcesReady.store(false, std::memory_order_release);
     m_resourceFailed.store(false, std::memory_order_release);
@@ -77,6 +121,7 @@ bool ClientNetwork::connect(
     m_loadResourcesStarted.store(false, std::memory_order_release);
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
+    m_localPlayerObserved.store(false, std::memory_order_release);
     m_clientWelcomeDeadline = {};
 
     char modulePath[MAX_PATH] = {};
@@ -97,18 +142,21 @@ bool ClientNetwork::connect(
         0);
 
     if (!m_enetHost) {
-        std::cerr << "[ClientNetwork] No se pudo crear el ENetHost cliente."
-                  << std::endl;
-        return false;
+        std::cerr
+            << "[ClientNetwork] No se pudo crear el ENetHost cliente."
+            << std::endl;
+        return;
     }
 
     ENetAddress address{};
     if (enet_address_set_host(&address, host.c_str()) != 0) {
-        std::cerr << "[ClientNetwork] No se pudo resolver el host: "
-                  << host << std::endl;
+        std::cerr
+            << "[ClientNetwork] No se pudo resolver el host: "
+            << host
+            << std::endl;
         enet_host_destroy(m_enetHost);
         m_enetHost = nullptr;
-        return false;
+        return;
     }
 
     address.port = port;
@@ -120,97 +168,29 @@ bool ClientNetwork::connect(
         0);
 
     if (!m_enetPeer) {
-        std::cerr << "[ClientNetwork] ENet no pudo crear el peer."
-                  << std::endl;
+        std::cerr
+            << "[ClientNetwork] ENet no pudo crear el peer."
+            << std::endl;
         enet_host_destroy(m_enetHost);
         m_enetHost = nullptr;
-        return false;
+        return;
     }
 
-    std::cout << "[ClientNetwork] ENet connection attempt started to "
-              << host << ":" << port
-              << " as '" << playerName << "'..." << std::endl;
-
-    // Esperar únicamente el establecimiento de transporte. El ServerData
-    // posterior es el evento que realmente comienza el Loading World.
-    ENetEvent event{};
-    const auto deadline =
+    m_connecting.store(true, std::memory_order_release);
+    m_connectDeadline =
         std::chrono::steady_clock::now() +
         std::chrono::milliseconds(kConnectTimeoutMs);
 
-    while (std::chrono::steady_clock::now() < deadline) {
-        const int service = enet_host_service(
-            m_enetHost,
-            &event,
-            50);
-
-        if (service < 0) {
-            break;
-        }
-
-        if (service == 0) {
-            continue;
-        }
-
-        if (event.type == ENET_EVENT_TYPE_CONNECT) {
-            m_connected = true;
-
-            BitStream bs;
-            bs.write<uint16_t>(
-                static_cast<uint16_t>(
-                    Protocol::PacketId::HandshakeRequest));
-            bs.writeString(m_playerName);
-            bs.write<ModelHash>(m_spawnModel);
-
-            sendPacket(
-                Protocol::ChannelReliable,
-                bs,
-                true);
-
-            std::cout
-                << "[ClientNetwork] ENet transport connected. "
-                   "HandshakeRequest sent; waiting for ServerData packet 4."
-                << std::endl;
-            return true;
-        }
-
-        if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
-            m_enetPeer = nullptr;
-            break;
-        }
-    }
-
-    std::cerr
-        << "[ClientNetwork] ENet connection timeout/refused for "
-        << host << ":" << port << std::endl;
-
-    if (ResourceClient::httpGetStatus(host, m_httpPort)) {
-        std::cerr
-            << "[ClientNetwork] HTTP control server responde en "
-            << host << ":" << m_httpPort
-            << ", pero ENet UDP no acepta conexiones en "
-            << host << ":" << port
-            << ". El problema está en el listener UDP/server build."
-            << std::endl;
-    } else {
-        std::cerr
-            << "[ClientNetwork] HTTP control server tampoco responde en "
-            << host << ":" << m_httpPort
-            << ". Verifica que frontier_server.exe esté ejecutándose."
-            << std::endl;
-    }
-
-    if (m_enetHost) {
-        enet_host_destroy(m_enetHost);
-        m_enetHost = nullptr;
-    }
-    m_enetPeer = nullptr;
-    m_connected = false;
-    return false;
+    std::cout
+        << "[ClientNetwork] ENet connection attempt started to "
+        << host << ":" << port
+        << " as '" << playerName << "'..."
+        << std::endl;
 }
-
 void ClientNetwork::disconnect() {
-    m_connected = false;
+    m_connectRequested.store(false, std::memory_order_release);
+    m_connecting.store(false, std::memory_order_release);
+    m_connected.store(false, std::memory_order_release);
 
     if (m_enetPeer) {
         enet_peer_disconnect(m_enetPeer, 0);
@@ -234,6 +214,7 @@ void ClientNetwork::disconnect() {
     m_clientWelcomeSent.store(false, std::memory_order_release);
     m_worldTransitionRequested.store(false, std::memory_order_release);
     m_clientWelcomeDeadline = {};
+    m_connectDeadline = {};
     UI::D3D11Renderer::get().setLoadingScreenVisible(false, "");
     m_localPlayerObserved.store(false, std::memory_order_release);
     m_localPlayerId = INVALID_PLAYER_ID;
@@ -241,13 +222,55 @@ void ClientNetwork::disconnect() {
 }
 
 void ClientNetwork::update() {
-    if (!m_enetHost) return;
+    startPendingConnection();
+
+    if (!m_enetHost) {
+        if (m_connecting.load(std::memory_order_acquire) &&
+            std::chrono::steady_clock::now() >= m_connectDeadline) {
+
+            std::cerr
+                << "[ClientNetwork] ENet connection timeout/refused for "
+                << m_serverHost
+                << ":"
+                << m_serverPort
+                << std::endl;
+
+            m_connecting.store(false, std::memory_order_release);
+            m_connected.store(false, std::memory_order_release);
+        }
+        return;
+    }
 
     ENetEvent event{};
     while (enet_host_service(m_enetHost, &event, 0) > 0) {
         switch (event.type) {
+            case ENET_EVENT_TYPE_CONNECT: {
+                m_connecting.store(false, std::memory_order_release);
+                m_connected.store(true, std::memory_order_release);
+
+                BitStream bs;
+                bs.write<uint16_t>(
+                    static_cast<uint16_t>(
+                        Protocol::PacketId::HandshakeRequest));
+                bs.writeString(m_playerName);
+                bs.write<ModelHash>(m_spawnModel);
+
+                sendPacket(
+                    Protocol::ChannelReliable,
+                    bs,
+                    true);
+
+                std::cout
+                    << "[ClientNetwork] ENet transport connected. "
+                       "HandshakeRequest sent; waiting for ServerData packet 4."
+                    << std::endl;
+                break;
+            }
+
             case ENET_EVENT_TYPE_RECEIVE:
-                if (event.packet && event.packet->dataLength > 0) {
+                if (event.packet &&
+                    event.packet->dataLength > 0) {
+
                     uint16_t packetId = 0;
                     if (event.packet->dataLength >= sizeof(uint16_t)) {
                         std::memcpy(
@@ -268,7 +291,8 @@ void ClientNetwork::update() {
                         << std::endl;
 
                     processPacket(
-                        static_cast<Protocol::Channel>(event.channelID),
+                        static_cast<Protocol::Channel>(
+                            event.channelID),
                         event.packet->data,
                         event.packet->dataLength);
                 }
@@ -281,8 +305,11 @@ void ClientNetwork::update() {
             case ENET_EVENT_TYPE_DISCONNECT:
                 std::cerr
                     << "[ClientNetwork] ENet disconnected from server."
+                    << " data="
+                    << event.data
                     << std::endl;
-                m_connected = false;
+                m_connecting.store(false, std::memory_order_release);
+                m_connected.store(false, std::memory_order_release);
                 m_enetPeer = nullptr;
                 break;
 
@@ -291,11 +318,30 @@ void ClientNetwork::update() {
         }
     }
 
+    if (m_connecting.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() >= m_connectDeadline) {
+
+        std::cerr
+            << "[ClientNetwork] ENet connection timeout/refused for "
+            << m_serverHost
+            << ":"
+            << m_serverPort
+            << std::endl;
+
+        m_connecting.store(false, std::memory_order_release);
+        m_connected.store(false, std::memory_order_release);
+
+        if (m_enetHost) {
+            enet_host_destroy(m_enetHost);
+            m_enetHost = nullptr;
+            m_enetPeer = nullptr;
+        }
+    }
+
     if (m_resourcesReady.load(std::memory_order_acquire)) {
         finishWorldLoadIfReady();
     }
 }
-
 void ClientNetwork::sendPacket(
     Protocol::Channel channel,
     const BitStream& bs,
