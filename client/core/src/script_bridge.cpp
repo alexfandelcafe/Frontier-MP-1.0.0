@@ -24,7 +24,6 @@ ScriptUnregisterFn s_scriptUnregister = nullptr;
 
 std::atomic<uint32_t> s_registrationMode{0};
 // 0 = sin intento, 1 = scriptRegister, 2 = scriptRegisterAdditionalThread.
-std::atomic<uint32_t> s_attachRegistrationMode{0};
 
 template <typename T>
 T resolveExport(HMODULE module, const char* name) {
@@ -228,6 +227,33 @@ void ScriptBridge::registerScriptAtAttach(
                 "scriptRegisterAdditionalThread");
     }
 
+    // Resolve the scheduler functions before registering the callback. This
+    // prevents ScriptMain from starting in the narrow window where scriptWait
+    // has not yet been resolved by FrontierMainThread.
+    s_scriptWait =
+        resolveExport<ScriptWaitFn>(
+            hookModule,
+            "?scriptWait@@YAXK@Z");
+
+    if (!s_scriptWait) {
+        s_scriptWait =
+            resolveMangledExport<ScriptWaitFn>(
+                hookModule,
+                "scriptWait");
+    }
+
+    s_scriptUnregister =
+        resolveExport<ScriptUnregisterFn>(
+            hookModule,
+            "?scriptUnregister@@YAXPEAUHINSTANCE__@@@Z");
+
+    if (!s_scriptUnregister) {
+        s_scriptUnregister =
+            resolveMangledExport<ScriptUnregisterFn>(
+                hookModule,
+                "scriptUnregister");
+    }
+
     // Prefer the normal SDK route. ScriptHook documentation expects
     // scriptRegister to be used from DLL attach.
     ScriptRegisterFn selected =
@@ -247,10 +273,6 @@ void ScriptBridge::registerScriptAtAttach(
 
     const uint32_t mode =
         registerNormal ? 1u : 2u;
-
-    s_attachRegistrationMode.store(
-        mode,
-        std::memory_order_release);
 
     s_registrationMode.store(
         mode,
