@@ -285,6 +285,109 @@ bool ResourceClient::httpGetStatus(
         body);
 }
 
+bool ResourceClient::loadAllResources(
+    const fs::path& cacheRoot,
+    uint32_t& resourceCount,
+    uint32_t& fileCount)
+{
+    resourceCount = 0;
+    fileCount = 0;
+
+    std::error_code ec;
+    if (!fs::exists(cacheRoot, ec) ||
+        !fs::is_directory(cacheRoot, ec)) {
+        std::cerr
+            << "[ResourceClient] LoadAllResources: cache inexistente: "
+            << cacheRoot.string() << std::endl;
+        return false;
+    }
+
+    for (const auto& resourceEntry : fs::directory_iterator(cacheRoot, ec)) {
+        if (ec) {
+            std::cerr
+                << "[ResourceClient] LoadAllResources: error enumerando cache: "
+                << ec.message() << std::endl;
+            return false;
+        }
+
+        if (!resourceEntry.is_directory(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+
+        const fs::path resourceRoot = resourceEntry.path();
+        const fs::path manifest = resourceRoot / "manifest.toml";
+
+        if (!fs::is_regular_file(manifest, ec) || ec) {
+            ec.clear();
+            std::cerr
+                << "[ResourceClient] LoadAllResources: recurso sin manifest.toml: "
+                << resourceRoot.filename().string() << std::endl;
+            return false;
+        }
+
+        uint32_t resourceFiles = 0;
+        for (const auto& fileEntry :
+             fs::recursive_directory_iterator(resourceRoot, ec)) {
+            if (ec) {
+                std::cerr
+                    << "[ResourceClient] LoadAllResources: error en "
+                       "recurso "
+                    << resourceRoot.filename().string()
+                    << ": " << ec.message() << std::endl;
+                return false;
+            }
+
+            if (fileEntry.is_regular_file(ec) && !ec) {
+                const std::string name =
+                    fileEntry.path().filename().string();
+                if (name.size() < 5 ||
+                    name.compare(name.size() - 5, 5, ".part") != 0) {
+                    ++resourceFiles;
+                }
+            } else {
+                ec.clear();
+            }
+        }
+
+        ++resourceCount;
+        fileCount += resourceFiles;
+
+        std::cout
+            << "[ResourceClient] LoadAllResources: '"
+            << resourceRoot.filename().string()
+            << "' listo, archivos=" << resourceFiles << std::endl;
+    }
+
+    if (resourceCount == 0) {
+        std::cerr
+            << "[ResourceClient] LoadAllResources: no hay recursos en cache."
+            << std::endl;
+        return false;
+    }
+
+    const fs::path marker =
+        cacheRoot / ".frontier_resources_loaded";
+    std::ofstream markerFile(marker, std::ios::trunc);
+    if (!markerFile.is_open()) {
+        std::cerr
+            << "[ResourceClient] LoadAllResources: no se pudo escribir marker."
+            << std::endl;
+        return false;
+    }
+
+    markerFile
+        << "resources=" << resourceCount << "\n"
+        << "files=" << fileCount << "\n";
+
+    std::cout
+        << "[ResourceClient] DoesAllResourcesAreLoaded() = true"
+        << " | recursos=" << resourceCount
+        << " archivos=" << fileCount << std::endl;
+
+    return true;
+}
+
 bool ResourceClient::downloadAll(
     const std::string& host,
     uint16_t httpPort,
