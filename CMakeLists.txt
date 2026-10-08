@@ -13,6 +13,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(frontier_enet)
 
+# ENet's upstream CMakeLists uses a directory-scoped include path, so expose
+# its public headers through the target for Frontier client/server consumers.
+if(TARGET enet)
+    target_include_directories(enet PUBLIC
+        "${frontier_enet_SOURCE_DIR}/include"
+    )
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
