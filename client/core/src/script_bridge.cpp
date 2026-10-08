@@ -14,15 +14,11 @@ namespace {
 
 using ScriptRegisterFn = void (*)(HMODULE, void (*)());
 using ScriptWaitFn = void (*)(DWORD);
-using ScriptUnregisterFn = void (*)(HMODULE);
 
 ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
-ScriptUnregisterFn s_scriptUnregister = nullptr;
 
-std::atomic<uint64_t> s_lastRetryTick{0};
-std::atomic<bool> s_registrationInFlight{false};
-constexpr uint64_t kRegistrationRetryMs = 3000;
+std::atomic<bool> s_registrationIssued{false};
 
 ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     if (!hookModule) {
@@ -53,20 +49,6 @@ ScriptWaitFn resolveScriptWait(HMODULE hookModule) {
         : nullptr;
 }
 
-ScriptUnregisterFn resolveScriptUnregister(HMODULE hookModule) {
-    if (!hookModule) {
-        return nullptr;
-    }
-
-    const FARPROC proc = GetProcAddress(
-        hookModule,
-        "?scriptUnregister@@YAXPEAUHINSTANCE__@@@Z");
-
-    return proc
-        ? reinterpret_cast<ScriptUnregisterFn>(proc)
-        : nullptr;
-}
-
 void resolveRuntimeApi() {
     const HMODULE hookModule =
         GetModuleHandleA("ScriptHookRDR.dll");
@@ -77,14 +59,14 @@ void resolveRuntimeApi() {
 
     s_scriptRegister = resolveScriptRegister(hookModule);
     s_scriptWait = resolveScriptWait(hookModule);
-    s_scriptUnregister = resolveScriptUnregister(hookModule);
 }
 
 } // namespace
 
 void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
-        s_registered.load(std::memory_order_acquire)) {
+        s_registered.load(std::memory_order_acquire) ||
+        s_registrationIssued.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -102,52 +84,24 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    const uint64_t now = GetTickCount64();
-    const uint64_t last =
-        s_lastRetryTick.load(std::memory_order_acquire);
-
-    if (s_registrationInFlight.load(std::memory_order_acquire)) {
-        if (last != 0 && now - last < kRegistrationRetryMs) {
-            return;
-        }
-
-        if (s_scriptUnregister) {
-            s_scriptUnregister(module);
-            std::cout
-                << "[ScriptBridge] Registro anterior retirado; "
-                   "reintentando con el scheduler de ScriptHookRDR."
-                << std::endl;
-        }
-
-        s_registrationInFlight.store(
-            false,
-            std::memory_order_release);
-        s_lastRetryTick.store(
-            0,
-            std::memory_order_release);
-    }
-
-    if (s_lastRetryTick.load(std::memory_order_acquire) != 0) {
+    bool expected = false;
+    if (!s_registrationIssued.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel)) {
         return;
     }
 
+    // ScriptHook's public SDK expects a module/script pair to be registered
+    // during DLL_PROCESS_ATTACH. The launcher loads ScriptHookRDR before this
+    // DLL, so this call is made at the supported lifecycle point.
     s_scriptRegister(
         module,
         &ScriptBridge::scriptMain);
 
-    s_registrationInFlight.store(
-        true,
-        std::memory_order_release);
-    s_registrationRequested.store(
-        true,
-        std::memory_order_release);
-    s_lastRetryTick.store(
-        now,
-        std::memory_order_release);
-
     std::cout
-        << "[ScriptBridge] scriptRegister enviado/reintentado desde el worker; "
-           "esperando ScriptMain."
+        << "[ScriptBridge] scriptRegister registrado; "
+           "ScriptMain queda en manos del scheduler de ScriptHookRDR."
         << std::endl;
 }
 
