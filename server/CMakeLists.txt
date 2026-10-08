@@ -16,6 +16,7 @@ target_include_directories(frontier_server PRIVATE
 
 target_link_libraries(frontier_server PRIVATE
     frontier_shared
+    enet
 )
 
 if(WIN32)
