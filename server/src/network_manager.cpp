@@ -339,6 +339,17 @@ void NetworkManager::processPacket(
             static_cast<Protocol::PacketId>(
                 bs.read<uint16_t>());
 
+        std::cout
+            << "[NetworkManager] RX packet id=0x"
+            << std::hex
+            << static_cast<uint16_t>(packetId)
+            << std::dec
+            << " channel="
+            << static_cast<uint32_t>(channel)
+            << " bytes="
+            << size
+            << std::endl;
+
         switch (packetId) {
             case Protocol::PacketId::HandshakeRequest: {
                 // senderId is INVALID for the first packet from a new peer.
@@ -361,6 +372,17 @@ void NetworkManager::processPacket(
                         << std::endl;
                     break;
                 }
+
+                std::cout
+                    << "[NetworkManager] HandshakeRequest OK: player='"
+                    << playerName
+                    << "' id="
+                    << senderId
+                    << " model=0x"
+                    << std::hex
+                    << model
+                    << std::dec
+                    << std::endl;
 
                 m_server.handlePlayerHandshake(
                     senderId,
