@@ -21,6 +21,7 @@ ScriptWaitFn s_scriptWait = nullptr;
 ScriptUnregisterFn s_scriptUnregister = nullptr;
 
 std::atomic<uint64_t> s_lastRetryTick{0};
+constexpr uint64_t kRegistrationRetryMs = 1500;
 
 ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     if (!hookModule) {
@@ -124,8 +125,7 @@ void ScriptBridge::registerScriptAtAttach(HMODULE module) {
 
 void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
-        s_registered.load(std::memory_order_acquire) ||
-        s_registrationRequested.load(std::memory_order_acquire)) {
+        s_registered.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -147,16 +147,14 @@ void ScriptBridge::registerScript(HMODULE module) {
     const uint64_t last =
         s_lastRetryTick.load(std::memory_order_acquire);
 
-    if (last != 0 && now - last < 3000) {
+    if (last != 0 && now - last < kRegistrationRetryMs) {
         return;
     }
 
-    // This path only exists if DLL attach happened before ScriptHookRDR was
-    // visible. It mirrors the same public API; no private ScriptHook internals
-    // are touched.
-    s_scriptRegister(
-        module,
-        &ScriptBridge::scriptMain);
+    // If the attach-time attempt happened before ScriptHook's scheduler was
+    // ready, repeat the same public registration call. No private scheduler
+    // internals are touched, and retries stop immediately once ScriptMain runs.
+    s_scriptRegister(module, &ScriptBridge::scriptMain);
 
     s_registrationRequested.store(
         true,
@@ -167,7 +165,7 @@ void ScriptBridge::registerScript(HMODULE module) {
         std::memory_order_release);
 
     std::cout
-        << "[ScriptBridge] scriptRegister enviado desde el worker; "
+        << "[ScriptBridge] scriptRegister enviado/reintentado desde el worker; "
            "esperando ScriptMain."
         << std::endl;
 }
@@ -181,6 +179,10 @@ void __cdecl ScriptBridge::scriptMain() {
     s_registered.store(
         true,
         std::memory_order_release);
+    s_registrationRequested.store(
+        false,
+        std::memory_order_release);
+    resolveRuntimeApi();
 
     // NativeInvoker is initialized only after ScriptHook has entered the
     // actual ScriptMain fiber. This keeps all native calls inside ScriptHook's
