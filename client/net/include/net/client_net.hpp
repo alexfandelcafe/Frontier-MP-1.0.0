@@ -7,6 +7,15 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <thread>
+#include <atomic>
+#include <filesystem>
+
+struct _ENetHost;
+struct _ENetPeer;
+
+using ENetHost = _ENetHost;
+using ENetPeer = _ENetPeer;
 
 namespace Frontier::Net {
 
@@ -48,10 +57,31 @@ private:
     ~ClientNetwork() = default;
 
     void processPacket(Protocol::Channel channel, const uint8_t* data, size_t size);
+    void beginServerDataLoading();
+    void finishWorldLoadIfReady();
 
     bool m_connected{false};
     PlayerId m_localPlayerId{INVALID_PLAYER_ID};
     std::string m_playerName;
+    std::string m_serverHost;
+    uint16_t m_serverPort{0};
+    uint16_t m_httpPort{4675};
+
+    ENetHost* m_enetHost{nullptr};
+    ENetPeer* m_enetPeer{nullptr};
+
+    std::atomic<bool> m_resourceLoading{false};
+    std::atomic<bool> m_resourcesReady{false};
+    std::atomic<bool> m_resourceFailed{false};
+    std::atomic<bool> m_clientWelcomeSent{false};
+
+    std::thread m_resourceThread;
+    std::filesystem::path m_cacheRoot;
+
+    Vector3 m_spawnPosition{-180.0f, 60.0f, 1950.0f};
+    float m_spawnHeading{0.0f};
+    ModelHash m_spawnModel{837};
+
     std::unordered_map<PlayerId, RemotePlayer> m_remotePlayers;
 };
 
