@@ -9,6 +9,8 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <string>
+#include <vector>
 
 namespace Frontier::Core {
 
@@ -35,6 +37,134 @@ ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     return proc
         ? reinterpret_cast<ScriptRegisterFn>(proc)
         : nullptr;
+}
+
+std::filesystem::path getGameDirectory() {
+    char exePath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(GetModuleHandleA(nullptr), exePath, MAX_PATH)) {
+        return {};
+    }
+    return std::filesystem::path(exePath).parent_path();
+}
+
+std::string readSmallTextFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return {};
+    }
+    return std::string(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>());
+}
+
+bool containsAsiLoaderMarker(const std::string& log) {
+    return log.find("Mod loader by kepmehz") != std::string::npos &&
+           log.find("self loading ScriptHookRDR.dll") != std::string::npos;
+}
+
+bool detectExternalAsiLoader(
+    const std::filesystem::path& gameDirectory,
+    const std::string& existingLog) {
+    if (gameDirectory.empty() ||
+        !std::filesystem::is_regular_file(
+            gameDirectory / "ScriptHookRDR.dll")) {
+        return false;
+    }
+
+    if (containsAsiLoaderMarker(existingLog)) {
+        return true;
+    }
+
+    const char* loaderNames[] = {
+        "dinput8.dll", "version.dll", "winmm.dll",
+        "dsound.dll", "xinput1_3.dll", "xinput9_1_0.dll"
+    };
+
+    for (const char* name : loaderNames) {
+        if (std::filesystem::is_regular_file(gameDirectory / name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loaderReportedReady(
+    const std::string& currentLog,
+    const std::string& baseline) {
+    if (currentLog.empty() || currentLog == baseline) {
+        return false;
+    }
+
+    std::string thisRun;
+    if (!baseline.empty() &&
+        currentLog.size() >= baseline.size() &&
+        currentLog.compare(0, baseline.size(), baseline) == 0) {
+        thisRun = currentLog.substr(baseline.size());
+    } else {
+        // The loader may truncate/recreate its log at process startup.
+        thisRun = currentLog;
+    }
+
+    const std::string initMarker =
+        "[INIT] Initializing ScriptHook for Red Dead Redemption";
+    const size_t initPos = thisRun.rfind(initMarker);
+    if (initPos == std::string::npos) {
+        return false;
+    }
+
+    return thisRun.find("Finished hooking functions", initPos) !=
+           std::string::npos;
+}
+
+bool prepareScriptHookReadiness() {
+    static bool initialized = false;
+    static bool externalLoader = false;
+    static std::filesystem::path logPath;
+    static std::string logBaseline;
+
+    if (!initialized) {
+        const auto gameDirectory = getGameDirectory();
+        logPath = gameDirectory / "asiloader.log";
+        logBaseline = readSmallTextFile(logPath);
+        externalLoader = detectExternalAsiLoader(
+            gameDirectory,
+            logBaseline);
+        initialized = true;
+
+        if (externalLoader) {
+            appendScriptBootLog(
+                "Detected external ASI loader; waiting for a fresh ScriptHook ready marker.");
+            OutputDebugStringA(
+                "[ScriptBridge] ASI Loader externo detectado; esperando "
+                "'Finished hooking functions'.\n");
+        }
+    }
+
+    if (!externalLoader) {
+        // Standalone mode: ScriptHook was explicitly injected by the launcher
+        // before the Frontier core, so its public exports are already resident.
+        return true;
+    }
+
+    const std::string currentLog = readSmallTextFile(logPath);
+    if (loaderReportedReady(currentLog, logBaseline)) {
+        return true;
+    }
+
+    // Avoid waiting forever if the loader redirects its log. The log supplied
+    // by the user shows the hook scan takes about 20 seconds; 45 seconds is a
+    // conservative fallback while still keeping graphics hooks installed early.
+    static const ULONGLONG firstAttempt = GetTickCount64();
+    if (GetTickCount64() - firstAttempt >= 45000) {
+        appendScriptBootLog(
+            "WARN: no fresh asiloader ready marker after 45 seconds; permitting ScriptMain registration.");
+        OutputDebugStringA(
+            "[ScriptBridge] ADVERTENCIA: log de readiness no detectado tras "
+            "45 s; se permitirá el registro.\n");
+        return true;
+    }
+
+    return false;
 }
 
 void appendScriptBootLog(const char* message) {
@@ -91,6 +221,18 @@ void ScriptBridge::registerScript(HMODULE module) {
     if (!module ||
         s_registered.load(std::memory_order_acquire) ||
         s_registrationIssued.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (!prepareScriptHookReadiness()) {
+        return;
+    }
+
+    // For the external loader path, do not call a partially initialized
+    // ScriptHook scheduler. For standalone mode the private copy was loaded
+    // before Frontier and can queue the script before RDR resumes.
+    if (!EngineHooks::isGameRenderReady() &&
+        GetModuleHandleA("ScriptHookRDR.dll") == nullptr) {
         return;
     }
 
