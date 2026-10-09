@@ -175,12 +175,21 @@ static bool waitForScriptHookReady(
         }
 
         const DWORD elapsed = GetTickCount() - startedAt;
-        if (!usingExistingLoader && elapsed >= 25000) {
-            // A directly injected ScriptHook may not be writing through
-            // asiloader.log. Allow its slow initialization window to complete.
-            std::cout
-                << "[Launcher] No asiloader marker available; 25-second "
-                   "ScriptHook startup window elapsed."
+        const DWORD markerlessFallbackMs =
+            usingExistingLoader ? 30000 : 25000;
+
+        if (elapsed >= markerlessFallbackMs) {
+            // Some ASI loaders write asiloader.log to a different working
+            // directory, or append through a process that keeps the file
+            // handle open. The supplied ScriptHook log completes pattern
+            // scans in ~20 seconds, so after a 30-second grace period with a
+            // live RDR process, proceed instead of waiting forever.
+            std::cerr
+                << "[Launcher] [WARN] Could not confirm the new "
+                   "'Finished hooking functions' log entry at the expected "
+                   "path. RDR is still alive; proceeding after "
+                << elapsed / 1000
+                << " seconds of ScriptHook startup grace period."
                 << std::endl;
             return true;
         }
