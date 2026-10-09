@@ -128,7 +128,7 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     if (!Frontier::Core::ScriptBridge::isRegistered()) {
         std::cout
             << "[ScriptBridge] ScriptMain todavía no ha iniciado; "
-               "se registró al cargar Frontier y queda a cargo de ScriptHookRDR."
+               "esperando a que ScriptHookRDR esté listo para registrar el callback."
             << std::endl;
     }
 
