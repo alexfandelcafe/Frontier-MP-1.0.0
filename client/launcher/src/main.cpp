@@ -59,108 +59,7 @@ static bool hasExistingAsiLoader(const fs::path& gameDirectory) {
     return false;
 }
 
-static bool hasReadyMarkerInNewLog(
-    const std::string& current,
-    const std::string& baseline)
-{
-    if (current == baseline || current.empty()) {
-        return false;
-    }
 
-    std::string currentSession;
-    if (current.size() >= baseline.size() &&
-        current.compare(0, baseline.size(), baseline) == 0) {
-        // Loader appended this run to the previous log.
-        currentSession = current.substr(baseline.size());
-    } else {
-        // Loader truncated/recreated asiloader.log for this run.
-        currentSession = current;
-    }
-
-    const std::string initMarker =
-        "[INIT] Initializing ScriptHook for Red Dead Redemption";
-    const size_t initPos = currentSession.rfind(initMarker);
-    if (initPos == std::string::npos) {
-        return false;
-    }
-
-    return currentSession.find(
-        "Finished hooking functions",
-        initPos) != std::string::npos;
-}
-
-static bool waitForScriptHookReady(
-    HANDLE processHandle,
-    const fs::path& gameDirectory,
-    const std::string& logBaseline,
-    bool usingExistingLoader,
-    DWORD timeoutMs)
-{
-    const DWORD startedAt = GetTickCount();
-    const fs::path logPath = gameDirectory / "asiloader.log";
-    DWORD lastStatusAt = startedAt;
-
-    std::cout
-        << "[Launcher] Waiting for ScriptHookRDR scheduler initialization"
-        << (usingExistingLoader
-                ? " (watching game-directory asiloader.log)..."
-                : "...")
-        << std::endl;
-
-    while (GetTickCount() - startedAt < timeoutMs) {
-        if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) {
-            std::cerr
-                << "[Launcher] RDR.exe exited before ScriptHookRDR became ready."
-                << std::endl;
-            return false;
-        }
-
-        const std::string currentLog = readWholeFile(logPath);
-        if (hasReadyMarkerInNewLog(currentLog, logBaseline)) {
-            std::cout
-                << "[Launcher] ScriptHookRDR reported 'Finished hooking functions'."
-                << std::endl;
-            return true;
-        }
-
-        const DWORD elapsed = GetTickCount() - startedAt;
-        const DWORD markerlessFallbackMs =
-            usingExistingLoader ? 30000 : 25000;
-
-        if (elapsed >= markerlessFallbackMs) {
-            // Some ASI loaders write asiloader.log to a different working
-            // directory, or append through a process that keeps the file
-            // handle open. The supplied ScriptHook log completes pattern
-            // scans in ~20 seconds, so after a 30-second grace period with a
-            // live RDR process, proceed instead of waiting forever.
-            std::cerr
-                << "[Launcher] [WARN] Could not confirm the new "
-                   "'Finished hooking functions' log entry at the expected "
-                   "path. RDR is still alive; proceeding after "
-                << elapsed / 1000
-                << " seconds of ScriptHook startup grace period."
-                << std::endl;
-            return true;
-        }
-
-        if (GetTickCount() - lastStatusAt >= 5000) {
-            std::cout
-                << "[Launcher] ScriptHookRDR is still initializing ("
-                << elapsed / 1000 << " s)..."
-                << std::endl;
-            lastStatusAt = GetTickCount();
-        }
-
-        Sleep(250);
-    }
-
-    std::cerr
-        << "[Launcher] [ERROR] ScriptHookRDR did not finish initialization "
-           "within the timeout. Frontier was not injected to avoid registering "
-           "against an inactive scheduler."
-        << std::endl;
-    return false;
-}
 #endif
 
 
@@ -459,7 +358,6 @@ int main(int argc, char* argv[]) {
     std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId
               << "). Preparing ScriptHookRDR and FrontierMP..." << std::endl;
 
-    const fs::path asiloaderLogPath = gameDir / "asiloader.log";
     const bool externalScriptHookLoader =
         hasExistingAsiLoader(gameDir);
 
