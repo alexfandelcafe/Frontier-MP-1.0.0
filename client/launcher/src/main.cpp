@@ -6,6 +6,7 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <iterator>
 #include "dependency_bootstrap.hpp"
 
 #ifdef _WIN32
@@ -65,6 +66,134 @@ static bool waitForRdrWindow(
         Sleep(100);
     }
 
+    return false;
+}
+static std::string readWholeFile(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return {};
+    }
+    return std::string(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>());
+}
+
+static bool hasExistingAsiLoader(const fs::path& gameDirectory) {
+    // The user's log explicitly reports an ASI loader self-loading
+    // ScriptHookRDR.dll from the game directory. In that setup we must not
+    // inject a second copy from the Frontier folder.
+    if (!fs::is_regular_file(gameDirectory / "ScriptHookRDR.dll")) {
+        return false;
+    }
+
+    const char* loaderNames[] = {
+        "dinput8.dll",
+        "version.dll",
+        "winmm.dll",
+        "dsound.dll",
+        "xinput1_3.dll",
+        "xinput9_1_0.dll"
+    };
+
+    for (const char* name : loaderNames) {
+        if (fs::is_regular_file(gameDirectory / name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool hasReadyMarkerInNewLog(
+    const std::string& current,
+    const std::string& baseline)
+{
+    if (current == baseline || current.empty()) {
+        return false;
+    }
+
+    std::string currentSession;
+    if (current.size() >= baseline.size() &&
+        current.compare(0, baseline.size(), baseline) == 0) {
+        // Loader appended this run to the previous log.
+        currentSession = current.substr(baseline.size());
+    } else {
+        // Loader truncated/recreated asiloader.log for this run.
+        currentSession = current;
+    }
+
+    const std::string initMarker =
+        "[INIT] Initializing ScriptHook for Red Dead Redemption";
+    const size_t initPos = currentSession.rfind(initMarker);
+    if (initPos == std::string::npos) {
+        return false;
+    }
+
+    return currentSession.find(
+        "Finished hooking functions",
+        initPos) != std::string::npos;
+}
+
+static bool waitForScriptHookReady(
+    HANDLE processHandle,
+    const fs::path& gameDirectory,
+    const std::string& logBaseline,
+    bool usingExistingLoader,
+    DWORD timeoutMs)
+{
+    const DWORD startedAt = GetTickCount();
+    const fs::path logPath = gameDirectory / "asiloader.log";
+    DWORD lastStatusAt = startedAt;
+
+    std::cout
+        << "[Launcher] Waiting for ScriptHookRDR scheduler initialization"
+        << (usingExistingLoader
+                ? " (watching game-directory asiloader.log)..."
+                : "...")
+        << std::endl;
+
+    while (GetTickCount() - startedAt < timeoutMs) {
+        if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) {
+            std::cerr
+                << "[Launcher] RDR.exe exited before ScriptHookRDR became ready."
+                << std::endl;
+            return false;
+        }
+
+        const std::string currentLog = readWholeFile(logPath);
+        if (hasReadyMarkerInNewLog(currentLog, logBaseline)) {
+            std::cout
+                << "[Launcher] ScriptHookRDR reported 'Finished hooking functions'."
+                << std::endl;
+            return true;
+        }
+
+        const DWORD elapsed = GetTickCount() - startedAt;
+        if (!usingExistingLoader && elapsed >= 25000) {
+            // A directly injected ScriptHook may not be writing through
+            // asiloader.log. Allow its slow initialization window to complete.
+            std::cout
+                << "[Launcher] No asiloader marker available; 25-second "
+                   "ScriptHook startup window elapsed."
+                << std::endl;
+            return true;
+        }
+
+        if (GetTickCount() - lastStatusAt >= 5000) {
+            std::cout
+                << "[Launcher] ScriptHookRDR is still initializing ("
+                << elapsed / 1000 << " s)..."
+                << std::endl;
+            lastStatusAt = GetTickCount();
+        }
+
+        Sleep(250);
+    }
+
+    std::cerr
+        << "[Launcher] [ERROR] ScriptHookRDR did not finish initialization "
+           "within the timeout. Frontier was not injected to avoid registering "
+           "against an inactive scheduler."
+        << std::endl;
     return false;
 }
 #endif
@@ -363,28 +492,42 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "[Launcher] Process launched (PID: " << pi.dwProcessId
-              << "). Loading ScriptHookRDR first..." << std::endl;
+              << "). Preparing ScriptHookRDR..." << std::endl;
 
-    // Keep RDR suspended only for the ScriptHook bootstrap. Do not inject
-    // Frontier while the primary game thread is suspended: ScriptHook's public
-    // scriptRegister() path is designed to run once the game lifecycle exists.
-    // The original RDR1 SDK example registers scripts from DLL_PROCESS_ATTACH;
-    // therefore Frontier is injected only after RDR has resumed.
-    if (!injectDll(pi.hProcess, scriptHook.scriptHookPath.string())) {
-        std::cerr
-            << "[Launcher] [ERROR] Could not load ScriptHookRDR from the Frontier client."
+    const fs::path asiloaderLogPath = gameDir / "asiloader.log";
+    const std::string asiloaderLogBaseline =
+        readWholeFile(asiloaderLogPath);
+    const bool externalScriptHookLoader =
+        hasExistingAsiLoader(gameDir);
+
+    if (externalScriptHookLoader) {
+        std::cout
+            << "[Launcher] Existing ASI loader + game-directory ScriptHookRDR.dll detected."
+            << std::endl
+            << "[Launcher] Skipping Frontier's private ScriptHook copy to avoid "
+               "loading two ScriptHookRDR instances."
             << std::endl;
-        TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        std::cout << "Press Enter to exit..." << std::endl;
-        std::cin.get();
-        return 1;
+    } else {
+        // Standalone mode: inject the private client copy while RDR is
+        // suspended. The game installation remains untouched.
+        if (!injectDll(pi.hProcess, scriptHook.scriptHookPath.string())) {
+            std::cerr
+                << "[Launcher] [ERROR] Could not load ScriptHookRDR from the Frontier client."
+                << std::endl;
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            std::cout << "Press Enter to exit..." << std::endl;
+            std::cin.get();
+            return 1;
+        }
+
+        std::cout
+            << "[Launcher] [SUCCESS] ScriptHookRDR staged in client directory."
+            << std::endl;
     }
 
-    std::cout << "[Launcher] [SUCCESS] ScriptHookRDR staged in client directory."
-              << std::endl;
-    std::cout << "[Launcher] Resuming RDR so ScriptHook can initialize..." << std::endl;
+    std::cout << "[Launcher] Resuming RDR so ScriptHookRDR can initialize..." << std::endl;
 
     if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
         std::cerr
@@ -397,29 +540,30 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Wait for the real RDR window before injecting Frontier. This gives
-    // ScriptHook its normal startup lifecycle while keeping both modules
-    // outside the game installation.
-    if (!waitForRdrWindow(pi.hProcess, pi.dwProcessId, 15000)) {
+    if (!waitForRdrWindow(pi.hProcess, pi.dwProcessId, 30000)) {
         std::cerr
             << "[Launcher] [ERROR] RDR window did not become ready in time."
             << std::endl;
-        TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         return 1;
     }
 
-    std::cout << "[Launcher] RDR window ready. Waiting for ScriptHook startup..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    std::cout
+        << "[Launcher] RDR window detected. Waiting for ScriptHookRDR's "
+           "pattern scans and script scheduler..."
+        << std::endl;
 
-    std::cout << "[Launcher] Injecting FrontierMP Core into running RDR.exe..." << std::endl;
-
-    if (!injectDll(pi.hProcess, dllPath.string())) {
+    if (!waitForScriptHookReady(
+            pi.hProcess,
+            gameDir,
+            asiloaderLogBaseline,
+            externalScriptHookLoader,
+            externalScriptHookLoader ? 60000 : 45000)) {
         std::cerr
-            << "[Launcher] [ERROR] FrontierMP Core injection failed."
+            << "[Launcher] FrontierMP Core was not injected because ScriptHookRDR "
+               "readiness could not be confirmed."
             << std::endl;
-        TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         std::cout << "Press Enter to exit..." << std::endl;
@@ -427,9 +571,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[Launcher] [SUCCESS] FrontierMP Core loaded into running RDR.exe." << std::endl;
+    std::cout << "[Launcher] Injecting FrontierMP Core into running RDR.exe..." << std::endl;
 
-    CloseHandle(pi.hThread);
+    if (!injectDll(pi.hProcess, dllPath.string())) {
+        std::cerr
+            << "[Launcher] [ERROR] FrontierMP Core injection failed."
+            << std::endl;
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    }
+
+    std::cout
+        << "[Launcher] [SUCCESS] FrontierMP Core loaded after ScriptHookRDR startup."
+        << std::endl;
+
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 #endif
