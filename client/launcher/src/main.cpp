@@ -86,6 +86,13 @@ static bool hasExistingAsiLoader(const fs::path& gameDirectory) {
         return false;
     }
 
+    const std::string priorLoaderLog =
+        readWholeFile(gameDirectory / "asiloader.log");
+    if (priorLoaderLog.find("Mod loader by kepmehz") != std::string::npos &&
+        priorLoaderLog.find("self loading ScriptHookRDR.dll") != std::string::npos) {
+        return true;
+    }
+
     const char* loaderNames[] = {
         "dinput8.dll",
         "version.dll",
