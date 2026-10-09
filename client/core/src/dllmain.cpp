@@ -149,12 +149,12 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     while (true) {
         Frontier::Net::ClientNetwork::get().update();
 
-        // Registration is performed from DLL_PROCESS_ATTACH. Keep the worker
-        // check only as telemetry; do not register a second time.
+        // Retry registration from this worker. ScriptBridge is idempotent:
+        // it will wait for the external loader's fresh "Finished hooking
+        // functions" marker and will issue scriptRegister only once.
         if (!Frontier::Core::ScriptBridge::isRegistered() &&
-            (++scriptBridgeRetryTicks % 60) == 0) {
-            OutputDebugStringA(
-                "[FrontierClient] ScriptMain still has not started after attach registration.\n");
+            (++scriptBridgeRetryTicks % 30) == 0) {
+            Frontier::Core::ScriptBridge::registerScript(hModule);
         }
 
         Frontier::UI::CefManager::get().update();
