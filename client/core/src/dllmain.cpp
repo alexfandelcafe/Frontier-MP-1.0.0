@@ -83,6 +83,11 @@ DWORD WINAPI FrontierMainThread(LPVOID lpParam) {
     fs::path modDir = getModDirectory(hModule);
     appendBootLog(modDir, "[FrontierClient] FrontierMainThread started.");
 
+    // Try registration immediately from the worker (never under the loader
+    // lock). In standalone mode the private ScriptHook copy is already loaded;
+    // with an external ASI loader, ScriptBridge waits for its ready marker.
+    Frontier::Core::ScriptBridge::registerScript(hModule);
+
     ClientConfig cfg = loadClientConfig(modDir);
     appendBootLog(modDir, "[FrontierClient] Settings loaded.");
 
@@ -163,11 +168,8 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
 
-        // RDR is already running when the launcher injects Frontier. Match the
-        // public RDR1 ScriptHook SDK lifecycle: register ScriptMain from
-        // DLL_PROCESS_ATTACH, then let ScriptHook own the script scheduler.
-        Frontier::Core::ScriptBridge::registerScript(hModule);
-
+        // Keep DllMain minimal. ScriptMain registration runs from
+        // FrontierMainThread after ScriptBridge checks ScriptHook readiness.
         HANDLE hThread = CreateThread(nullptr, 0,
             (LPTHREAD_START_ROUTINE)FrontierMainThread, hModule, 0, nullptr);
         if (hThread) {
