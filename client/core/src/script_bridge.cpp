@@ -261,9 +261,9 @@ void ScriptBridge::registerScript(HMODULE module) {
         return;
     }
 
-    // ScriptHook's public SDK expects a module/script pair to be registered
-    // during DLL_PROCESS_ATTACH. The launcher loads ScriptHookRDR before this
-    // DLL, so this call is made at the supported lifecycle point.
+    // Register outside the Windows loader lock. In standalone mode the private
+    // ScriptHook copy is resident before Frontier starts; in external-loader
+    // mode, prepareScriptHookReadiness() waits for this run's completed scans.
     s_scriptRegister(
         module,
         &ScriptBridge::scriptMain);
