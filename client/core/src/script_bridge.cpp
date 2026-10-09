@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <iterator>
 
 namespace Frontier::Core {
 
@@ -23,6 +24,8 @@ ScriptRegisterFn s_scriptRegister = nullptr;
 ScriptWaitFn s_scriptWait = nullptr;
 
 std::atomic<bool> s_registrationIssued{false};
+
+void appendScriptBootLog(const char* message);
 
 ScriptRegisterFn resolveScriptRegister(HMODULE hookModule) {
     if (!hookModule) {
